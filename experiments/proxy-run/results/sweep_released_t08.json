@@ -1,0 +1,82 @@
+{
+  "mode": "spec",
+  "target": "Qwen/Qwen3-4B",
+  "draft": "deepseek-ai/dspark_qwen3_4b_block7",
+  "max_new_tokens": 1024,
+  "temperature": 1.0,
+  "confidence_threshold": 0.8,
+  "seed": 980406,
+  "tasks": [
+    [
+      "gsm8k",
+      300
+    ],
+    [
+      "mt-bench",
+      80
+    ],
+    [
+      "alpaca",
+      300
+    ]
+  ],
+  "rows": [
+    {
+      "dataset": "gsm8k",
+      "num_samples": 300,
+      "draft_tokens_per_proposal": 5.351142270035054,
+      "acceptance_length": 5.470264716547806,
+      "verify_rate": 0.8613040747578175,
+      "accept_rates_by_position": [
+        0.9442849686847599,
+        0.8957518166573505,
+        0.8541915274463007,
+        0.8167763418694998,
+        0.7873023924253952,
+        0.7619263558860875,
+        0.7449122106943336
+      ],
+      "wall_s": 86.1573752,
+      "tok_s_spec": 1053.9666486961407,
+      "ms_per_round": 5.207142221685
+    },
+    {
+      "dataset": "mt-bench",
+      "num_samples": 80,
+      "draft_tokens_per_proposal": 1.7098265121575458,
+      "acceptance_length": 2.423739031415366,
+      "verify_rate": 0.8944259053269065,
+      "accept_rates_by_position": [
+        0.9096129550936028,
+        0.8438488739996277,
+        0.8059824368825467,
+        0.7737306843267108,
+        0.7690498588899342,
+        0.7477638640429338,
+        0.7298985167837627
+      ],
+      "wall_s": 82.585455446,
+      "tok_s_spec": 438.7697543630254,
+      "ms_per_round": 5.53188126773394
+    },
+    {
+      "dataset": "alpaca",
+      "num_samples": 300,
+      "draft_tokens_per_proposal": 1.5503299289707058,
+      "acceptance_length": 2.279935275080906,
+      "verify_rate": 0.8939765985497693,
+      "accept_rates_by_position": [
+        0.9034990130988696,
+        0.8303123339434374,
+        0.7888704011832132,
+        0.7603135313531353,
+        0.7328878088294857,
+        0.7131193693693694,
+        0.7035953177257525
+      ],
+      "wall_s": 218.05143309800002,
+      "tok_s_spec": 498.63006381221186,
+      "ms_per_round": 4.582260183625436
+    }
+  ]
+}

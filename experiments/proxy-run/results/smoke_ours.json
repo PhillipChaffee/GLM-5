@@ -1,0 +1,541 @@
+{
+  "mode": "spec",
+  "target": "Qwen/Qwen3-4B",
+  "draft": "/vol/home/checkpoints/deepspec/dspark_block7_qwen3_4b_smoke/step_2",
+  "max_new_tokens": 1024,
+  "temperature": 1.0,
+  "confidence_threshold": 0.0,
+  "seed": 980406,
+  "tasks": [
+    [
+      "gsm8k",
+      300
+    ],
+    [
+      "math500",
+      300
+    ],
+    [
+      "humaneval",
+      164
+    ],
+    [
+      "mbpp",
+      256
+    ],
+    [
+      "mt-bench",
+      80
+    ],
+    [
+      "alpaca",
+      300
+    ]
+  ],
+  "rows": [
+    {
+      "dataset": "gsm8k",
+      "num_samples": 300,
+      "draft_tokens_per_proposal": 7.0,
+      "acceptance_length": 1.0595910711804752,
+      "verify_rate": 0.1324488838975594,
+      "accept_rates_by_position": [
+        0.058699578567128236,
+        0.000891492613346918,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "wall_s": 2442.5834384080003,
+      "tok_s_spec": 37.590118133218596,
+      "ms_per_round": 28.27980640031492,
+      "confidence_summary": {
+        "ece_mean": 0.008513008113444702,
+        "auc_mean": 0.5,
+        "brier_mean": 0.008513009259455254,
+        "pred_mean": 1.6340908889100227e-08,
+        "target_mean": 0.008513010168639307
+      },
+      "confidence_per_position": [
+        {
+          "position": 0,
+          "ece": 0.058699524180766,
+          "auc": 0.5,
+          "brier": 0.058699572220669245,
+          "pred_mean": 5.438636222358856e-08,
+          "target_mean": 0.058699578567128236
+        },
+        {
+          "position": 1,
+          "ece": 0.000891482613346918,
+          "auc": 0.5,
+          "brier": 0.0008914925955170669,
+          "pred_mean": 1.0000000000018835e-08,
+          "target_mean": 0.000891492613346918
+        },
+        {
+          "position": 2,
+          "ece": 1.0000000000018835e-08,
+          "auc": NaN,
+          "brier": 1.0000000000007779e-16,
+          "pred_mean": 1.0000000000018835e-08,
+          "target_mean": 0.0
+        },
+        {
+          "position": 3,
+          "ece": 1.0000000000018835e-08,
+          "auc": NaN,
+          "brier": 1.0000000000007779e-16,
+          "pred_mean": 1.0000000000018835e-08,
+          "target_mean": 0.0
+        },
+        {
+          "position": 4,
+          "ece": 1.0000000000018835e-08,
+          "auc": NaN,
+          "brier": 1.0000000000007779e-16,
+          "pred_mean": 1.0000000000018835e-08,
+          "target_mean": 0.0
+        },
+        {
+          "position": 5,
+          "ece": 1.0000000000018835e-08,
+          "auc": NaN,
+          "brier": 1.0000000000007779e-16,
+          "pred_mean": 1.0000000000018835e-08,
+          "target_mean": 0.0
+        },
+        {
+          "position": 6,
+          "ece": 1.0000000000018835e-08,
+          "auc": NaN,
+          "brier": 1.0000000000007779e-16,
+          "pred_mean": 1.0000000000018835e-08,
+          "target_mean": 0.0
+        }
+      ]
+    },
+    {
+      "dataset": "math500",
+      "num_samples": 300,
+      "draft_tokens_per_proposal": 7.0,
+      "acceptance_length": 1.0614737049524894,
+      "verify_rate": 0.13268421311906117,
+      "accept_rates_by_position": [
+        0.06123834128826028,
+        0.00023536366422910189,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "wall_s": 5193.717110014,
+      "tok_s_spec": 37.38035705211458,
+      "ms_per_round": 28.4281927902855,
+      "confidence_summary": {
+        "ece_mean": 0.00878195688321364,
+        "auc_mean": 0.5,
+        "brier_mean": 0.008781957026881709,
+        "pred_mean": 1.5252856272664705e-08,
+        "target_mean": 0.008781957850355626
+      },
+      "confidence_per_position": [
+        {
+          "position": 0,
+          "ece": 0.06123829451826637,
+          "auc": 0.5,
+          "brier": 0.06123833552864963,
+          "pred_mean": 4.6769993908747194e-08,
+          "target_mean": 0.06123834128826028
+        },
+        {
+          "position": 1,
+          "ece": 0.0002353536642291019,
+          "auc": 0.5,
+          "brier": 0.00023536365952183018,
+          "pred_mean": 9.99999999998429e-09,
+          "target_mean": 0.00023536366422910189
+        },
+        {
+          "position": 2,
+          "ece": 9.99999999998429e-09,
+          "auc": NaN,
+          "brier": 9.999999999980763e-17,
+          "pred_mean": 9.99999999998429e-09,
+          "target_mean": 0.0
+        },
+        {
+          "position": 3,
+          "ece": 9.99999999998429e-09,
+          "auc": NaN,
+          "brier": 9.999999999980763e-17,
+          "pred_mean": 9.99999999998429e-09,
+          "target_mean": 0.0
+        },
+        {
+          "position": 4,
+          "ece": 9.99999999998429e-09,
+          "auc": NaN,
+          "brier": 9.999999999980763e-17,
+          "pred_mean": 9.99999999998429e-09,
+          "target_mean": 0.0
+        },
+        {
+          "position": 5,
+          "ece": 9.99999999998429e-09,
+          "auc": NaN,
+          "brier": 9.999999999980763e-17,
+          "pred_mean": 9.99999999998429e-09,
+          "target_mean": 0.0
+        },
+        {
+          "position": 6,
+          "ece": 9.99999999998429e-09,
+          "auc": NaN,
+          "brier": 9.999999999980763e-17,
+          "pred_mean": 9.99999999998429e-09,
+          "target_mean": 0.0
+        }
+      ]
+    },
+    {
+      "dataset": "humaneval",
+      "num_samples": 164,
+      "draft_tokens_per_proposal": 7.0,
+      "acceptance_length": 1.0445506236789617,
+      "verify_rate": 0.1305688279598702,
+      "accept_rates_by_position": [
+        0.04446131404245185,
+        8.930963650977941e-05,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "wall_s": 1870.041951889999,
+      "tok_s_spec": 37.613594673055516,
+      "ms_per_round": 27.8354611635557,
+      "confidence_summary": {
+        "ece_mean": 0.0063643752379609194,
+        "auc_mean": 0.5,
+        "brier_mean": 0.006364374399646796,
+        "pred_mean": 1.3859033600695471e-08,
+        "target_mean": 0.006364374811280232
+      },
+      "confidence_per_position": [
+        {
+          "position": 0,
+          "ece": 0.04446127702921664,
+          "auc": 0.5,
+          "brier": 0.04446131116280347,
+          "pred_mean": 3.7013235204807015e-08,
+          "target_mean": 0.04446131404245185
+        },
+        {
+          "position": 1,
+          "ece": 8.92996365097794e-05,
+          "auc": 0.5,
+          "brier": 8.930963472359291e-05,
+          "pred_mean": 1.000000000001021e-08,
+          "target_mean": 8.930963650977941e-05
+        },
+        {
+          "position": 2,
+          "ece": 1.000000000001021e-08,
+          "auc": NaN,
+          "brier": 1.0000000000015708e-16,
+          "pred_mean": 1.000000000001021e-08,
+          "target_mean": 0.0
+        },
+        {
+          "position": 3,
+          "ece": 1.000000000001021e-08,
+          "auc": NaN,
+          "brier": 1.0000000000015708e-16,
+          "pred_mean": 1.000000000001021e-08,
+          "target_mean": 0.0
+        },
+        {
+          "position": 4,
+          "ece": 1.000000000001021e-08,
+          "auc": NaN,
+          "brier": 1.0000000000015708e-16,
+          "pred_mean": 1.000000000001021e-08,
+          "target_mean": 0.0
+        },
+        {
+          "position": 5,
+          "ece": 1.000000000001021e-08,
+          "auc": NaN,
+          "brier": 1.0000000000015708e-16,
+          "pred_mean": 1.000000000001021e-08,
+          "target_mean": 0.0
+        },
+        {
+          "position": 6,
+          "ece": 1.000000000001021e-08,
+          "auc": NaN,
+          "brier": 1.0000000000015708e-16,
+          "pred_mean": 1.000000000001021e-08,
+          "target_mean": 0.0
+        }
+      ]
+    },
+    {
+      "dataset": "mbpp",
+      "num_samples": 256,
+      "draft_tokens_per_proposal": 7.0,
+      "acceptance_length": 1.0429708968672913,
+      "verify_rate": 0.1303713621084114,
+      "accept_rates_by_position": [
+        0.04286864607165224,
+        0.00010225079563900357,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "wall_s": 2226.5040711539987,
+      "tok_s_spec": 36.7639121169783,
+      "ms_per_round": 28.457726596122125,
+      "confidence_summary": {
+        "ece_mean": 0.006138698931366772,
+        "auc_mean": 0.5,
+        "brier_mean": 0.006138699095698353,
+        "pred_mean": 1.4906817692443787e-08,
+        "target_mean": 0.006138699552470178
+      },
+      "confidence_per_position": [
+        {
+          "position": 0,
+          "ece": 0.042868601723928396,
+          "auc": 0.5,
+          "brier": 0.04286864287629398,
+          "pred_mean": 4.434772384701232e-08,
+          "target_mean": 0.04286864607165224
+        },
+        {
+          "position": 1,
+          "ece": 0.00010224079563900354,
+          "auc": 0.5,
+          "brier": 0.0001022507935939949,
+          "pred_mean": 1.0000000000015697e-08,
+          "target_mean": 0.00010225079563900357
+        },
+        {
+          "position": 2,
+          "ece": 1.0000000000015697e-08,
+          "auc": NaN,
+          "brier": 1.0000000000013106e-16,
+          "pred_mean": 1.0000000000015697e-08,
+          "target_mean": 0.0
+        },
+        {
+          "position": 3,
+          "ece": 1.0000000000015697e-08,
+          "auc": NaN,
+          "brier": 1.0000000000013106e-16,
+          "pred_mean": 1.0000000000015697e-08,
+          "target_mean": 0.0
+        },
+        {
+          "position": 4,
+          "ece": 1.0000000000015697e-08,
+          "auc": NaN,
+          "brier": 1.0000000000013106e-16,
+          "pred_mean": 1.0000000000015697e-08,
+          "target_mean": 0.0
+        },
+        {
+          "position": 5,
+          "ece": 1.0000000000015697e-08,
+          "auc": NaN,
+          "brier": 1.0000000000013106e-16,
+          "pred_mean": 1.0000000000015697e-08,
+          "target_mean": 0.0
+        },
+        {
+          "position": 6,
+          "ece": 1.0000000000015697e-08,
+          "auc": NaN,
+          "brier": 1.0000000000013106e-16,
+          "pred_mean": 1.0000000000015697e-08,
+          "target_mean": 0.0
+        }
+      ]
+    },
+    {
+      "dataset": "mt-bench",
+      "num_samples": 80,
+      "draft_tokens_per_proposal": 7.0,
+      "acceptance_length": 1.0188300132039727,
+      "verify_rate": 0.1273537516504966,
+      "accept_rates_by_position": [
+        0.018743900338710602,
+        8.611286526207016e-05,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "wall_s": 1023.12557887,
+      "tok_s_spec": 34.7660157605341,
+      "ms_per_round": 29.36809170646995,
+      "confidence_summary": {
+        "ece_mean": 0.0026900030940282334,
+        "auc_mean": 0.5,
+        "brier_mean": 0.002690001695764334,
+        "pred_mean": 1.3077967862221629e-08,
+        "target_mean": 0.0026900018862818106
+      },
+      "confidence_per_position": [
+        {
+          "position": 0,
+          "ece": 0.018743868792935565,
+          "auc": 0.5,
+          "brier": 0.018743899006810002,
+          "pred_mean": 3.15457750355758e-08,
+          "target_mean": 0.018743900338710602
+        },
+        {
+          "position": 1,
+          "ece": 8.610286526207016e-05,
+          "auc": 0.5,
+          "brier": 8.61128635398301e-05,
+          "pred_mean": 9.999999999995935e-09,
+          "target_mean": 8.611286526207016e-05
+        },
+        {
+          "position": 2,
+          "ece": 9.999999999995935e-09,
+          "auc": NaN,
+          "brier": 9.999999999997432e-17,
+          "pred_mean": 9.999999999995935e-09,
+          "target_mean": 0.0
+        },
+        {
+          "position": 3,
+          "ece": 9.999999999995935e-09,
+          "auc": NaN,
+          "brier": 9.999999999997432e-17,
+          "pred_mean": 9.999999999995935e-09,
+          "target_mean": 0.0
+        },
+        {
+          "position": 4,
+          "ece": 9.999999999995935e-09,
+          "auc": NaN,
+          "brier": 9.999999999997432e-17,
+          "pred_mean": 9.999999999995935e-09,
+          "target_mean": 0.0
+        },
+        {
+          "position": 5,
+          "ece": 9.999999999995935e-09,
+          "auc": NaN,
+          "brier": 9.999999999997432e-17,
+          "pred_mean": 9.999999999995935e-09,
+          "target_mean": 0.0
+        },
+        {
+          "position": 6,
+          "ece": 9.999999999995935e-09,
+          "auc": NaN,
+          "brier": 9.999999999997432e-17,
+          "pred_mean": 9.999999999995935e-09,
+          "target_mean": 0.0
+        }
+      ]
+    },
+    {
+      "dataset": "alpaca",
+      "num_samples": 300,
+      "draft_tokens_per_proposal": 7.0,
+      "acceptance_length": 1.0169173451083207,
+      "verify_rate": 0.12711466813854008,
+      "accept_rates_by_position": [
+        0.01682535301964031,
+        9.199208868037349e-05,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "wall_s": 3068.2108098949993,
+      "tok_s_spec": 36.117792050863805,
+      "ms_per_round": 28.225112091394134,
+      "confidence_summary": {
+        "ece_mean": 0.002416764497921657,
+        "auc_mean": 0.5,
+        "brier_mean": 0.0024167634163139253,
+        "pred_mean": 1.3374695583709212e-08,
+        "target_mean": 0.0024167635869029548
+      },
+      "confidence_per_position": [
+        {
+          "position": 0,
+          "ece": 0.016825319396771225,
+          "auc": 0.5,
+          "brier": 0.016825351827356397,
+          "pred_mean": 3.3622869085880363e-08,
+          "target_mean": 0.01682535301964031
+        },
+        {
+          "position": 1,
+          "ece": 9.198208868037348e-05,
+          "auc": 0.5,
+          "brier": 9.199208684057847e-05,
+          "pred_mean": 1.000000000001402e-08,
+          "target_mean": 9.199208868037349e-05
+        },
+        {
+          "position": 2,
+          "ece": 1.000000000001402e-08,
+          "auc": NaN,
+          "brier": 9.999999999997252e-17,
+          "pred_mean": 1.000000000001402e-08,
+          "target_mean": 0.0
+        },
+        {
+          "position": 3,
+          "ece": 1.000000000001402e-08,
+          "auc": NaN,
+          "brier": 9.999999999997252e-17,
+          "pred_mean": 1.000000000001402e-08,
+          "target_mean": 0.0
+        },
+        {
+          "position": 4,
+          "ece": 1.000000000001402e-08,
+          "auc": NaN,
+          "brier": 9.999999999997252e-17,
+          "pred_mean": 1.000000000001402e-08,
+          "target_mean": 0.0
+        },
+        {
+          "position": 5,
+          "ece": 1.000000000001402e-08,
+          "auc": NaN,
+          "brier": 9.999999999997252e-17,
+          "pred_mean": 1.000000000001402e-08,
+          "target_mean": 0.0
+        },
+        {
+          "position": 6,
+          "ece": 1.000000000001402e-08,
+          "auc": NaN,
+          "brier": 9.999999999997252e-17,
+          "pred_mean": 1.000000000001402e-08,
+          "target_mean": 0.0
+        }
+      ]
+    }
+  ]
+}
