@@ -1,0 +1,79 @@
+{
+  "mode": "baseline",
+  "target": "Qwen/Qwen3-4B",
+  "draft": "/vol/home/checkpoints/deepspec/dspark_block7_qwen3_4b_full/step_380",
+  "max_new_tokens": 1024,
+  "temperature": 1.0,
+  "confidence_threshold": 0.0,
+  "seed": 980406,
+  "tasks": [
+    [
+      "gsm8k",
+      300
+    ],
+    [
+      "math500",
+      300
+    ],
+    [
+      "humaneval",
+      164
+    ],
+    [
+      "mbpp",
+      256
+    ],
+    [
+      "mt-bench",
+      80
+    ],
+    [
+      "alpaca",
+      300
+    ]
+  ],
+  "rows": [
+    {
+      "dataset": "gsm8k",
+      "num_samples": 300,
+      "tokens": 90365,
+      "wall_s": 269.129198726,
+      "tok_s_baseline": 335.7681010747572
+    },
+    {
+      "dataset": "math500",
+      "num_samples": 300,
+      "tokens": 194862,
+      "wall_s": 546.373716603,
+      "tok_s_baseline": 356.6459990270514
+    },
+    {
+      "dataset": "humaneval",
+      "num_samples": 164,
+      "tokens": 72736,
+      "wall_s": 217.61604683899998,
+      "tok_s_baseline": 334.24005746144564
+    },
+    {
+      "dataset": "mbpp",
+      "num_samples": 256,
+      "tokens": 83119,
+      "wall_s": 223.74019916499992,
+      "tok_s_baseline": 371.49783682235346
+    },
+    {
+      "dataset": "mt-bench",
+      "num_samples": 80,
+      "tokens": 36374,
+      "wall_s": 124.6763844950001,
+      "tok_s_baseline": 291.7473116286806
+    },
+    {
+      "dataset": "alpaca",
+      "num_samples": 300,
+      "tokens": 108509,
+      "wall_s": 327.3262774,
+      "tok_s_baseline": 331.5010357918793
+    }
+  ]
+}
