@@ -27,6 +27,13 @@ orchestrated by `dspark_proxy.py` (Modal app `dspark-proxy-run`, Volume `dspark-
    (gsm8k, math500, humaneval, mbpp, mt-bench, alpaca; max_new_tokens 1024, temp 1.0),
    plus wall-clock timing → spec tok/s, ms/verify-round, and a target-only baseline
    tok/s. `--confidence-threshold > 0` runs the confidence-head pruning mode.
+6. **push-hf** (CPU): uploads the cache, regen data, and the full-run drafter checkpoint
+   to a public HF dataset repo (`<hf-user>/dspark-proxy-run`). HF public storage is
+   free (8.7 TB quota); private would not fit (100 GB cap). Uses the `hf-token` Modal
+   secret; the token never leaves Modal. Run this, verify, then delete `/vol/cache`
+   so the 611 GB stops costing ~$54/mo on Modal. Ticket #14 downloads from HF instead:
+   `uvx modal run ... --stage restore-cache-from-hf` (not implemented yet) or a plain
+   `huggingface_hub.snapshot_download` in any function that needs the cache.
 
 ## Status log
 
@@ -97,7 +104,17 @@ orchestrated by `dspark_proxy.py` (Modal app `dspark-proxy-run`, Volume `dspark-
 Volume: 611 GB cache + 43 GB checkpoints/results ≈ $54/mo if held. Cache kept for the
 A/B ticket (#14 — same data/cache, head is the only variable); delete with
 `uvx modal volume rm -r dspark-proxy-run /cache` if #14 slips past ~3 weeks (rebuild:
-stage `cache`, ~$4 + 55 min). Grand total ≈ $165 + storage time.
+stage `cache`, ~$4 + 55 min). Grand total ≈ $165 + storage time. After the run: cache
+and checkpoints moved to HF (see Storage decision) — storage now ~$0.10/mo.
+
+Storage decision (post-run): the cache, regen data, and the full-run drafter checkpoint
+moved to the public HF dataset repo `phillipchaffee/dspark-proxy-run` (free, 8.7 TB
+public quota; 614 GB uploaded in 31.8 min at ~235 MB/s via per-file `upload_file`) and
+`/vol/cache` plus `/vol/home/checkpoints` were deleted, capping Modal storage spend at
+~$0.10/mo (regen data 0.13 GB + results). The 7.4 GB-per-rank optimizer resume states
+were not uploaded (not needed once training completes). Ticket #14 fetches the cache
+and checkpoint from HF (huggingface_hub is in the deepspec image; ~35 min + ~$1 to
+restore the full cache, or ~1 min for the 2.8 GB checkpoint alone).
 
 ## Gotchas (all hit, all fixed)
 
