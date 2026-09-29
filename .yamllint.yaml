@@ -1,0 +1,9 @@
+# yamllint configuration. Reasoned deviations from the default rules only.
+extends: default
+rules:
+  # workflow run lines and long curl pins are normal YAML content here
+  line-length: disable
+  # the folder CI files and this repo's workflows use no leading ---
+  document-start: disable
+  # GitHub Actions reads `on:` as a key; YAML 1.1 calls it a boolean
+  truthy: { check-keys: false }

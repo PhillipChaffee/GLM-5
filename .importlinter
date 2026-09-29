@@ -1,0 +1,34 @@
+# import-linter contracts for this repo's scripts package (import-linter 2.15).
+# Command: lint-imports. Every contract carries its reason; a new exception
+# goes in that contract's ignore_imports with a reason, or the contract is
+# rewritten deliberately.
+
+[importlinter]
+root_package = scripts
+# Required for the forbidden contract below: its target (pytest) is not part
+# of the root package, and import-linter refuses external forbidden modules
+# unless external packages join the graph (import-linter docs).
+include_external_packages = True
+
+[importlinter:contract:layers]
+name = Layers import only downwards
+type = layers
+layers =
+    (scripts.extract_paper)
+# One layer today: scripts.extract_paper, alone in its layer. Layers wear
+# parentheses so a fresh skeleton with only __init__.py passes;
+# a layer wakes up when its module appears. A cycle inside these layers
+# needs an upward import, so this contract is also the cycle gate for the
+# covered modules. Extend the list as the package grows; siblings allowed
+# to import each other go on one line joined with colons.
+
+[importlinter:contract:forbidden]
+name = Shipped code does not import pytest
+type = forbidden
+source_modules =
+    scripts
+forbidden_modules =
+    pytest
+# pytest is a test-only dependency: an import in shipped code is a bug.
+# deptry does not catch it because pytest may be declared nowhere in
+# pyproject.toml (the gate tools install ad hoc), so the contract carries it.

@@ -1,21 +1,7 @@
 #!/usr/bin/env bash
+# Extract a paper's text; needs python3 with pypdf (see AGENTS.md "Lint and gates").
 set -euo pipefail
 pdf="${1:?usage: extract-paper <pdf> — writes a NUL-free .txt sidecar beside it}"
-[ -f "$pdf" ] || { echo "no such file: $pdf" >&2; exit 1; }
-if python3 -c 'import pypdf' >/dev/null 2>&1; then
-  PY=python3
-else
-  S="${OPENCODE_SCRATCH_DIR:-$HOME/.cache/extract-paper-venv}"
-  [ -x "$S/pdfenv/bin/python" ] || { mkdir -p "$S"; python3 -m venv "$S/pdfenv"; "$S/pdfenv/bin/pip" install -q pypdf; }
-  PY="$S/pdfenv/bin/python"
-fi
-exec "$PY" - "$pdf" <<'EOF'
-import sys
-from pathlib import Path
-from pypdf import PdfReader
-src = Path(sys.argv[1])
-txt = "\n".join((pg.extract_text() or "") for pg in PdfReader(src).pages).replace("\x00", "")
-out = src.with_suffix(".txt")
-out.write_text(txt)
-print(f"{src} -> {out} ({len(txt)} chars)")
-EOF
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="$repo_root${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m scripts.extract_paper "$pdf"

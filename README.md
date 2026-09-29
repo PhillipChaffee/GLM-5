@@ -34,9 +34,10 @@ GLM-5.3-Flash starts from a newly trained base model, with its architecture and 
 GLM-5.2, our latest flagship model for long-horizon tasks. It marks a substantial leap in long-horizon task capability over its predecessor GLM-5.1 and, for the first time, delivers that capability on a **solid 1M-token context**.
 
 GLM-5.2's new capabilities include:
-- **Solid 1M Context:** A solid 1M-token context that stably sustains long-horizon work
-- **Advanced Coding with Flexible Effort**: Stronger coding capabilities with multiple thinking effort levels to balance performance and latency
-- **Improved Architecture**: We propose [IndexShare](https://arxiv.org/abs/2603.12201), which reuses the same indexer across every four sparse attention layers, reducing per-token FLOPs by 2.9× at a 1M context length. We also improve GLM-5.2’s MTP layer for speculative decoding, increasing the acceptance length by up to 20%
+
++ **Solid 1M Context:** A solid 1M-token context that stably sustains long-horizon work
++ **Advanced Coding with Flexible Effort**: Stronger coding capabilities with multiple thinking effort levels to balance performance and latency
++ **Improved Architecture**: We propose [IndexShare](https://arxiv.org/abs/2603.12201), which reuses the same indexer across every four sparse attention layers, reducing per-token FLOPs by 2.9× at a 1M context length. We also improve GLM-5.2’s MTP layer for speculative decoding, increasing the acceptance length by up to 20%
 
 ![bench_52](resources/bench_52.png)
 
@@ -89,35 +90,34 @@ On [Vending Bench 2](https://andonlabs.com/evals/vending-bench-2), a benchmark t
 
 ### GLM-5.3-Flash
 
-- [SGLang](https://github.com/sgl-project/sglang) — see [cookbook](https://cookbook.sglang.io/autoregressive/GLM/GLM-5.3-Flash)
-- [vLLM](https://github.com/vllm-project/vllm) — see [recipes](https://recipes.vllm.ai/zai-org/GLM-5.3-Flash)
-- [TokenSpeed](https://github.com/lightseekorg/tokenspeed) — see [here](https://lightseek.org/tokenspeed/recipes/models#glm-5-3-flash)
-- [Transformers](https://github.com/huggingface/transformers) — see [transformers docs](https://github.com/huggingface/transformers/blob/main/docs/source/en/model_doc/glm5_next.md)
-- [KTransformers](https://github.com/kvcache-ai/ktransformers) — see [tutorial](https://github.com/kvcache-ai/ktransformers/blob/main/doc/en/kt-kernel/GLM-5.3-Flash-Tutorial.md)
-- [Unsloth](https://github.com/unslothai/unsloth) — see [guide](https://unsloth.ai/docs/models/glm-5.3)
++ [SGLang](https://github.com/sgl-project/sglang) — see [cookbook](https://cookbook.sglang.io/autoregressive/GLM/GLM-5.3-Flash)
++ [vLLM](https://github.com/vllm-project/vllm) — see [recipes](https://recipes.vllm.ai/zai-org/GLM-5.3-Flash)
++ [TokenSpeed](https://github.com/lightseekorg/tokenspeed) — see its [GLM-5.3-Flash recipe](https://lightseek.org/tokenspeed/recipes/models#glm-5-3-flash)
++ [Transformers](https://github.com/huggingface/transformers) — see [transformers docs](https://github.com/huggingface/transformers/blob/main/docs/source/en/model_doc/glm5_next.md)
++ [KTransformers](https://github.com/kvcache-ai/ktransformers) — see [tutorial](https://github.com/kvcache-ai/ktransformers/blob/main/doc/en/kt-kernel/GLM-5.3-Flash-Tutorial.md)
++ [Unsloth](https://github.com/unslothai/unsloth) — see [guide](https://unsloth.ai/docs/models/glm-5.3)
 
 ### GLM-5.3 and Earlier GLM-5 Models
 
-- [SGLang](https://github.com/sgl-project/sglang)  — see [cookbook](https://cookbook.sglang.io/autoregressive/GLM/GLM-5.3)
-- [vLLM](https://github.com/vllm-project/vllm) — see [recipes](https://recipes.vllm.ai/zai-org/GLM-5.3)
-- [Transformers](https://github.com/huggingface/transformers) — see [transformers docs](https://github.com/huggingface/transformers/blob/main/docs/source/en/model_doc/glm_moe_dsa.md)
-- [KTransformers](https://github.com/kvcache-ai/ktransformers) — see [tutorial](https://github.com/kvcache-ai/ktransformers/blob/main/doc/en/kt-kernel/GLM-5.2-Tutorial.md)
-- [Unsloth](https://github.com/unslothai/unsloth) — see [guide](https://unsloth.ai/docs/models/glm-5.2)
-- For deployment on the `Ascend NPU` platform, inference frameworks such as vLLM-Ascend, xLLM and SGLang are supported — see [here](example/ascend.md).
-
++ [SGLang](https://github.com/sgl-project/sglang)  — see [cookbook](https://cookbook.sglang.io/autoregressive/GLM/GLM-5.3)
++ [vLLM](https://github.com/vllm-project/vllm) — see [recipes](https://recipes.vllm.ai/zai-org/GLM-5.3)
++ [Transformers](https://github.com/huggingface/transformers) — see [transformers docs](https://github.com/huggingface/transformers/blob/main/docs/source/en/model_doc/glm_moe_dsa.md)
++ [KTransformers](https://github.com/kvcache-ai/ktransformers) — see [tutorial](https://github.com/kvcache-ai/ktransformers/blob/main/doc/en/kt-kernel/GLM-5.2-Tutorial.md)
++ [Unsloth](https://github.com/unslothai/unsloth) — see [guide](https://unsloth.ai/docs/models/glm-5.2)
++ For deployment on the `Ascend NPU` platform, inference frameworks such as vLLM-Ascend, xLLM and SGLang are supported — see the [Ascend deployment guide](example/ascend.md).
 
 ### Note
 
-- **GLM-5.2** accept only `high` and `max` for `reasoning_effort`, with the same `max` default and the same fallback behavior.
-- **GLM-5.3 and GLM-5.3-Flash** supports controlling the thinking budget through the `reasoning_effort` parameter, which accepts three levels: `low`, `high`, and `max`. It defaults to `max` if not passed (or if set to any other value). To use `low` or `high`, pass them explicitly. For benchmark and leaderboard reproduction, keep the default `max`.
-- In the chat template for GLM-5.3 and GLM-5.3-Flash, `clear_thinking` defaults to `false` if not passed. For chat scenarios, explicitly pass `clear_thinking=true`.
++ **GLM-5.2** accept only `high` and `max` for `reasoning_effort`, with the same `max` default and the same fallback behavior.
++ **GLM-5.3 and GLM-5.3-Flash** supports controlling the thinking budget through the `reasoning_effort` parameter, which accepts three levels: `low`, `high`, and `max`. It defaults to `max` if not passed (or if set to any other value). To use `low` or `high`, pass them explicitly. For benchmark and leaderboard reproduction, keep the default `max`.
++ In the chat template for GLM-5.3 and GLM-5.3-Flash, `clear_thinking` defaults to `false` if not passed. For chat scenarios, explicitly pass `clear_thinking=true`.
 
 ## Fine-tuning GLM-5 Series Models
 
 The GLM-5 series supports fine-tuning with the following frameworks. Feel free to try them out:
 
-- [Slime](https://github.com/THUDM/slime) (v0.3.0+), the reinforcement learning framework used by the GLM team.
-- [ms-swift](https://github.com/modelscope/ms-swift) (v4.4.0+), supporting SFT, PPO, and GRPO.
++ [Slime](https://github.com/THUDM/slime) (v0.3.0+), the reinforcement learning framework used by the GLM team.
++ [ms-swift](https://github.com/modelscope/ms-swift) (v4.4.0+), supporting SFT, PPO, and GRPO.
 
 ## Citation
 

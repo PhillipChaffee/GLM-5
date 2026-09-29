@@ -1,6 +1,6 @@
 name: "\U0001F680 Feature request"
 description: Submit a request for a new GLM-5 feature / 提交一个新的 GLM-5 的功能建议
-labels: [ "feature" ]
+labels: ["feature"]
 body:
   - type: textarea
     id: feature-request

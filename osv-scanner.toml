@@ -1,0 +1,24 @@
+# osv-scanner config for the lockfiles in this directory. This file only
+# applies to files scanned from this directory (osv-scanner configuration
+# docs), so it scopes the two license overrides below to the pip lockfile.
+# Both packages ship MIT-licensed code but PyPI metadata carries the full
+# license text in the `license` field instead of a standard expression, so
+# the scanner cannot classify it ("non-standard") and the allow-list alone
+# cannot match it. The overrides state the concluded license from the
+# packages' own metadata: vulture 2.16 declares
+# `License :: OSI Approved :: MIT License`; libcst 1.9.0 declares MIT plus
+# PSF-2.0 and Apache-2.0 for standard-library-derived files, all already on
+# the license allow-list in quality.yml.
+[[PackageOverrides]]
+name = "vulture"
+version = "2.16"
+ecosystem = "PyPI"
+license.override = ["MIT"]
+reason = "PyPI metadata carries the MIT license text, not a standard expression; osv-scanner reports it as non-standard (vulture PyPI classifiers: MIT)."
+
+[[PackageOverrides]]
+name = "libcst"
+version = "1.9.0"
+ecosystem = "PyPI"
+license.override = ["MIT", "PSF-2.0", "Apache-2.0"]
+reason = "PyPI metadata carries the full license text, not a standard expression; osv-scanner reports it as non-standard (libcst declares MIT plus PSF-2.0 and Apache-2.0 for stdlib-derived files)."

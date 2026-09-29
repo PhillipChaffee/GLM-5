@@ -1,0 +1,35 @@
+# Google Shell Style Guide section 4.1, the mechanical slice: "Every file
+# must have a top-level comment including a brief overview of its
+# contents." Parse-aware: the shebang is skipped (tree-sitter-bash parses
+# it as a comment), so the gate wants a comment at the top that is not
+# the shebang — either as the file's first node, or as the second when a
+# shebang leads. The mechanical ceiling is presence only: any
+# non-shebang comment satisfies this gate (a `# shellcheck shell=bash`
+# directive counts), because judging prose substance is the documented
+# refusal this gate sits beside, not this gate's job. Remedy: add the
+# header comment.
+id: shell-file-missing-header-comment
+language: bash
+severity: error
+message: "Every file must have a top-level comment including a brief overview of its contents (Google Shell Style Guide section 4.1). Remedy: add the header comment."
+rule:
+  kind: program
+  any:
+    # No shebang: the first node must already be the header comment.
+    - not:
+        has:
+          kind: comment
+          stopBy: neighbor
+          nthChild: 1
+    # Shebang: a header comment must follow it before any code.
+    - all:
+        - has:
+            kind: comment
+            stopBy: neighbor
+            nthChild: 1
+            regex: '^#!'
+        - not:
+            has:
+              kind: comment
+              stopBy: neighbor
+              nthChild: 2

@@ -44,6 +44,7 @@ htmlcov/
 .cache
 nosetests.xml
 coverage.xml
+/coverage/
 *.cover
 *.py.cover
 .hypothesis/
@@ -161,3 +162,9 @@ __marimo__/
 
 # opencode (per-machine)
 opencode.json
+
+# Full-lint gate artifacts: local mutation runs and gate caches must never
+# leak into commits (from full-lint's python .gitignore block).
+.mutmut-cache/
+mutants/
+.complexipy_cache/

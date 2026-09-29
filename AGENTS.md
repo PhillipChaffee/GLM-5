@@ -27,3 +27,7 @@ Default five canonical triage roles (`needs-triage`, `needs-info`, `ready-for-ag
 ### Domain docs
 
 Single-context: `CONTEXT.md` at the repo root, ADRs in `docs/adr/`. See `docs/agents/domain.md`.
+
+### Lint and gates
+
+Full-lint gates are adopted in this fork; run every PR-blocking gate locally with `./run-gates.sh` from the repo root. It needs the gate venv on PATH: create one (Python 3.12) with `uv venv --python 3.12 <dir> && uv pip install --python <dir>/bin/python -r requirements-lock.txt && uv pip install --python <dir>/bin/python pip`, then run `PATH="<dir>/bin:$PATH" ./run-gates.sh`. The venv supplies the Python-side tools (ruff, mypy, pytest, complexipy, deptry, vulture, lint-imports); the binary gates also expect these on PATH (Homebrew/npm): shellcheck, shfmt, kcov, ast-grep, gitleaks, typos, markdownlint-cli2, lychee, jscpd, osv-scanner, actionlint, yamllint, jq. The extensionless `scripts/extract-paper` is shell-gated alongside the `*.sh` files: shellcheck, shfmt, kcov coverage ≥ 95%, ast-grep header comment, and the fail-closed TODO-policy grep. `papers/*.txt` is excluded from the typos, lychee, and jscpd scans. Mutation testing runs nightly in `.github/workflows/mutation.yml`, never on the PR path; after a local `mutmut run`, delete the generated `mutants/` directory and any `coverage/` report before re-running the gates — some gates scan untracked output.

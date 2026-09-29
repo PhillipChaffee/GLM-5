@@ -1,0 +1,5 @@
+# gitleaks configuration. The default ruleset runs as-is; this repository has
+# no allowlist entries. Add one only with a reason (for example, a test
+# fixture that carries a fake credential on purpose).
+[extend]
+useDefault = true
