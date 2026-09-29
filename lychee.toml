@@ -10,10 +10,15 @@
 max_retries = 4
 timeout = 20
 exclude_path = ["./kcov-out", 'papers/.*\.txt$']
+# A 429 is throttling, never a dead link, and shared CI egress IPs collect
+# them on aggressive doc hosts (docs.vllm.ai returned 429 for
+# example/ascend.md's link through max_retries and pacing; the same link
+# passes from a local IP). Accept 429 on top of lychee's default accepted
+# set (100..=103, 200..=299); every other rejection still fails the gate.
+accept = ["100..=103", "200..=299", "429"]
 
-# docs.vllm.ai rate-limits shared CI egress IPs: example/ascend.md's link
-# came back 429 even after max_retries on the first CI run (the same link
-# passed from a local IP). Pace that host well below the default burst.
+# Pace docs.vllm.ai below the default burst to avoid provoking the 429s
+# above at all.
 [hosts."docs.vllm.ai"]
 concurrency = 1
 request_interval = "2s"
