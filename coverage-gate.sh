@@ -17,7 +17,7 @@
 # This is line coverage only: kcov counts executed lines, and no
 # branch-coverage mode exists for shell (kcov issue #27, open). The reports
 # are kept on both branches: on
-# failure for coverage/index.html debugging, and on success so the CI's
+# failure for kcov/index.html debugging, and on success so the CI's
 # Coveralls upload step can turn the cobertura.xml report into the free
 # coverage badge.
 #
@@ -25,7 +25,13 @@
 set -u -o pipefail
 
 readonly required=95
-readonly out_dir=coverage
+# The out-directory must not be named "coverage": kcov v42 resolves the bare
+# name through PATH when wiring its report base, and the coverage.py console
+# script (installed beside the gate python by pytest-cov) shadows it — the
+# run then dies with "Can't write helper" / "Can't start/attach" / "Can't
+# open directory <python-bin>/coverage/" (first observed on ubuntu-24.04 CI;
+# any other name runs clean).
+readonly out_dir=kcov
 
 if ! command -v jq >/dev/null 2>&1; then
 	echo "coverage-gate: FAIL — jq is required to read kcov's coverage.json and is not installed" >&2
