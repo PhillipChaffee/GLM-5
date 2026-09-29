@@ -13,3 +13,13 @@ repos:
       - id: mixed-line-ending
       - id: check-added-large-files
       - id: detect-private-key
+  - repo: local
+    hooks:
+      # Why: see base-current-gate.sh's header comment.
+      - id: base-current
+        name: base is current with origin/main
+        entry: ./base-current-gate.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
