@@ -25,13 +25,14 @@
 set -u -o pipefail
 
 readonly required=95
-# The out-directory must not be named "coverage": kcov v42 resolves the bare
-# name through PATH when wiring its report base, and the coverage.py console
-# script (installed beside the gate python by pytest-cov) shadows it — the
-# run then dies with "Can't write helper" / "Can't start/attach" / "Can't
-# open directory <python-bin>/coverage/" (first observed on ubuntu-24.04 CI;
-# any other name runs clean).
-readonly out_dir=kcov
+# The out-directory name must not resolve anywhere on PATH: kcov v42
+# resolves the bare name while wiring its report base, and a PATH hit
+# (the coverage.py console script installed beside the gate python, or
+# even kcov itself) breaks the run with "Can't write helper" / "Can't
+# start/attach" / "Can't open directory <resolved-path>/" — observed on
+# ubuntu-24.04 CI with the names "coverage" and "kcov"; a name with no
+# PATH entry runs clean.
+readonly out_dir=kcov-out
 
 if ! command -v jq >/dev/null 2>&1; then
 	echo "coverage-gate: FAIL — jq is required to read kcov's coverage.json and is not installed" >&2

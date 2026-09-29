@@ -1,11 +1,19 @@
 # Link-check configuration. Retry then fail: a timeout must not pass
 # silently. Add exclusions here with a reason: exclude_path skips kcov's
-# generated coverage/ HTML report tree, whose relative asset links resolve
-# only inside the report directory itself, and the shell coverage gate
-# keeps the reports after the run. The OWNER/REPO coveralls placeholders
-# resolve in CI contexts that lychee accepts.
+# generated HTML report tree (named kcov-out by coverage-gate.sh — the old
+# name "coverage" collided with the coverage console script on PATH), whose
+# relative asset links resolve only inside the report directory itself, and
+# the shell coverage gate keeps the reports after the run. The OWNER/REPO
+# coveralls placeholders resolve in CI contexts that lychee accepts.
 # PDF-extracted text is reference material with broken line-wrapped URLs;
 # maintained Markdown and other source files remain in scope.
 max_retries = 4
 timeout = 20
-exclude_path = ["./coverage", 'papers/.*\.txt$']
+exclude_path = ["./kcov-out", 'papers/.*\.txt$']
+
+# docs.vllm.ai rate-limits shared CI egress IPs: example/ascend.md's link
+# came back 429 even after max_retries on the first CI run (the same link
+# passed from a local IP). Pace that host well below the default burst.
+[hosts."docs.vllm.ai"]
+concurrency = 1
+request_interval = "2s"

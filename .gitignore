@@ -44,7 +44,7 @@ htmlcov/
 .cache
 nosetests.xml
 coverage.xml
-/kcov/
+/kcov-out/
 *.cover
 *.py.cover
 .hypothesis/
