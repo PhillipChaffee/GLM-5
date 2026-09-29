@@ -1,0 +1,82 @@
+{
+  "mode": "spec",
+  "target": "Qwen/Qwen3-4B",
+  "draft": "deepseek-ai/dspark_qwen3_4b_block7",
+  "max_new_tokens": 1024,
+  "temperature": 1.0,
+  "confidence_threshold": 0.5,
+  "seed": 980406,
+  "tasks": [
+    [
+      "gsm8k",
+      300
+    ],
+    [
+      "mt-bench",
+      80
+    ],
+    [
+      "alpaca",
+      300
+    ]
+  ],
+  "rows": [
+    {
+      "dataset": "gsm8k",
+      "num_samples": 300,
+      "draft_tokens_per_proposal": 6.7492029034665215,
+      "acceptance_length": 6.099721864188318,
+      "verify_rate": 0.7871418441578906,
+      "accept_rates_by_position": [
+        0.93374516326115,
+        0.8656604289031553,
+        0.8005097471929462,
+        0.7408853258975253,
+        0.6909039267201591,
+        0.6470118944009283,
+        0.6057979677226539
+      ],
+      "wall_s": 72.96711651,
+      "tok_s_spec": 1236.3788555031665,
+      "ms_per_round": 4.949943457703005
+    },
+    {
+      "dataset": "mt-bench",
+      "num_samples": 80,
+      "draft_tokens_per_proposal": 3.9939971414959503,
+      "acceptance_length": 3.346355407336827,
+      "verify_rate": 0.6700755552163626,
+      "accept_rates_by_position": [
+        0.7991038866312389,
+        0.6494980879541109,
+        0.5550445530324806,
+        0.4936731107205624,
+        0.4521777194134384,
+        0.42929833958221747,
+        0.4148617127624125
+      ],
+      "wall_s": 61.16801905599999,
+      "tok_s_spec": 575.0717538816483,
+      "ms_per_round": 5.828301005812291
+    },
+    {
+      "dataset": "alpaca",
+      "num_samples": 300,
+      "draft_tokens_per_proposal": 4.146606762828092,
+      "acceptance_length": 3.2667001655237646,
+      "verify_rate": 0.6347289225821273,
+      "accept_rates_by_position": [
+        0.7904900135676648,
+        0.6259071759832903,
+        0.5154522137661355,
+        0.44064375905609604,
+        0.38865248226950355,
+        0.3519061583577713,
+        0.32617662612374404
+      ],
+      "wall_s": 176.16433904299998,
+      "tok_s_spec": 628.6800189053403,
+      "ms_per_round": 5.207032958234807
+    }
+  ]
+}
