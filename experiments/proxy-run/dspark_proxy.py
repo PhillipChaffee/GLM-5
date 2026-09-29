@@ -70,9 +70,11 @@ regen_image = (
 
 util_image = (
     modal.Image.debian_slim(python_version="3.12")
-    .pip_install("datasets", "tqdm")
+    .pip_install("datasets", "tqdm", "huggingface_hub", "hf_xet")
     .add_local_dir(LOCAL_DIR / "scripts", "/work/scripts")
 )
+
+hf_secret = modal.Secret.from_name("hf-token")
 
 app = modal.App("dspark-proxy-run")
 
@@ -359,6 +361,47 @@ def fetch_result(name: str) -> bytes:
     return (Path(VOL) / "results" / f"{name}.json").read_bytes()
 
 
+@app.function(
+    image=util_image,
+    volumes={VOL: volume},
+    timeout=12 * 3600,
+    secrets=[hf_secret],
+    cpu=8,
+)
+def push_to_hf(repo_id: str = "") -> None:
+    """Upload the cache, regen data, and full-run checkpoint to a public HF dataset repo."""
+    from huggingface_hub import HfApi
+
+    api = HfApi()
+    user = api.whoami()["name"]
+    repo = repo_id or f"{user}/dspark-proxy-run"
+    api.create_repo(repo_id=repo, repo_type="dataset", private=False, exist_ok=True)
+    cache_dir = Path(VOL) / "cache"
+    data_dir = Path(VOL) / "data"
+    jobs: list[tuple[Path, str]] = [
+        (item, f"cache/{item.name}") for item in sorted(cache_dir.iterdir()) if item.is_file()
+    ]
+    jobs.extend(
+        (item, f"data/{item.name}") for item in sorted(data_dir.iterdir()) if item.is_file()
+    )
+    ckpt_dir = Path(VOL) / "home/checkpoints/deepspec/dspark_block7_qwen3_4b_full/step_380"
+    jobs.extend(
+        (ckpt_dir / name, f"checkpoints/dspark_block7_qwen3_4b_full_step_380/{name}")
+        for name in ("model.safetensors", "config.json", "train_config.py")
+    )
+    t0 = time.time()
+    for idx, (src, dst) in enumerate(jobs, 1):
+        size = src.stat().st_size
+        _log(f"[{idx}/{len(jobs)}] {dst} {size / 1e9:.1f} GB uploading")
+        f0 = time.time()
+        api.upload_file(
+            path_or_fileobj=str(src), path_in_repo=dst, repo_id=repo, repo_type="dataset"
+        )
+        _log(f"[{idx}/{len(jobs)}] {dst} done in {(time.time() - f0) / 60:.1f} min")
+    _log(f"ALL DONE in {(time.time() - t0) / 60:.1f} min -> https://huggingface.co/datasets/{repo}")
+    volume.commit()
+
+
 @app.local_entrypoint()
 def main(
     stage: str,
@@ -375,6 +418,7 @@ def main(
     max_new_tokens: int = 1024,
     confidence_threshold: float = 0.0,
     baseline: bool = False,
+    repo_id: str = "",
     foreground: bool = False,
 ) -> None:
     """Dispatch one pipeline stage; every flag maps to a stage parameter."""
@@ -413,6 +457,7 @@ def main(
             },
         ),
         "inspect": (inspect, {}),
+        "push-hf": (push_to_hf, {"repo_id": repo_id}),
     }
     fn, kwargs = dispatch[stage]
     if foreground:
