@@ -1,0 +1,149 @@
+# The CI gates for this fork: the gate list ./run-gates.sh runs locally,
+# split across this file (Python + shared hygiene) and shell.yml (shell).
+#
+# Every tool here fails the job by its own exit code — ruff and mypy exit
+# nonzero on any diagnostic, and pytest exits nonzero when coverage's
+# fail_under (in pyproject.toml) is unmet. There is no warn-to-error
+# arithmetic to maintain.
+permissions:
+  contents: read  # least privilege: no step in this workflow writes to the repo (GitHub secure-use reference)
+name: Python and hygiene
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20  # bounds a hung network gate; GitHub's default is 360
+    concurrency:
+      # Two jobs in one workflow must not share a group (the second start
+      # cancels the first) and github.job reads empty at group-evaluation
+      # time, so the job name is hardcoded here rather than interpolated.
+      group: ${{ github.workflow }}-test-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"  # the requires-python floor: every gate below must hold on it
+          cache: pip
+      # The exact pins the gate commands assume; a bumped pin re-runs the
+      # local gates and lands in the same commit as the version strings here.
+      # Every tool the gates use installs from the hash-pinned lockfile, so
+      # transitive dependencies resolve by hash too — no live PyPI resolution.
+      - run: >-
+          python -m pip install --require-hashes -r requirements-lock.txt
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy .
+      - name: Coverage gate (fail_under = 95, from pyproject.toml)
+        run: pytest
+      - name: Cognitive-complexity gate (max-complexity-allowed = 15, from pyproject.toml)
+        run: complexipy .
+      - name: Effective-lines gate (max 1000, from effective-lines-gate.sh)
+        run: ./effective-lines-gate.sh
+      # pytest-cov writes coverage.xml before it evaluates fail_under, so the
+      # upload below still runs on a red gate and the badge tells the truth.
+      # Free for public repositories, no account and no secret: the action
+      # takes the built-in GITHUB_TOKEN. coverage.xml is the cobertura
+      # format; pinned action version.
+      # The badge is not a gate: a coveralls.io flake must not redden an
+      # otherwise-green build.
+      - name: Upload coverage to Coveralls
+        if: always()
+        continue-on-error: true
+        uses: coverallsapp/github-action@8d6379e14d29928660c4ba802d8e85393440b329  # v2
+        with:
+          file: coverage.xml
+          format: cobertura
+
+  hygiene:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20  # bounds a hung network gate; GitHub's default is 360
+    concurrency:
+      # job-unique group, same reason as the test job above
+      group: ${{ github.workflow }}-hygiene-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          fetch-depth: 0
+      - name: Install pinned hygiene tools
+        run: |
+          # Pinned hygiene tools: one download per tool, no installer actions.
+          # Every download's sha256 digest is embedded in this file (computed
+          # from the exact release asset at pin time and checked on download),
+          # the same trust-anchor model as the python lockfile's --require-hashes:
+          # a re-uploaded or retargeted upstream asset fails the gate instead of
+          # executing. Registry installs (npm global, pip) are version-pinned,
+          # run with --ignore-scripts where npm is involved, and resolve their
+          # transitive trees from the registry — recorded residual. yamllint is
+          # the one license exception: GPL-3.0-or-later, deliberately excluded
+          # from the permissive-only lockfile, installed by exact pin.
+          TYPOS_VERSION=1.50.1
+          curl --connect-timeout 10 --max-time 300 -sSfL "https://github.com/crate-ci/typos/releases/download/v${TYPOS_VERSION}/typos-v${TYPOS_VERSION}-x86_64-unknown-linux-musl.tar.gz" -o /tmp/typos.tar.gz
+          echo "edf0545109aee6a22751d04ddecb97c45be47d3aa0409564fb895eeeace91b1e  /tmp/typos.tar.gz" | sha256sum --check --status
+          mkdir /tmp/typosx && tar xz -C /tmp/typosx -f /tmp/typos.tar.gz
+          sudo mv /tmp/typosx/typos /usr/local/bin/
+          npm install -g --ignore-scripts markdownlint-cli2@0.23.2
+          LYCHEE_VERSION=0.24.2
+          curl --connect-timeout 10 --max-time 300 -sSfL "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/lychee.tar.gz
+          echo "1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a  /tmp/lychee.tar.gz" | sha256sum --check --status
+          mkdir /tmp/lycheex && tar xz -C /tmp/lycheex -f /tmp/lychee.tar.gz
+          sudo mv /tmp/lycheex/lychee-x86_64-unknown-linux-gnu/lychee /usr/local/bin/
+          GITLEAKS_VERSION=8.30.1
+          curl --connect-timeout 10 --max-time 300 -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tar.gz" | sha256sum --check --status
+          mkdir /tmp/gitleaksx && tar xz -C /tmp/gitleaksx -f /tmp/gitleaks.tar.gz
+          sudo mv /tmp/gitleaksx/gitleaks /usr/local/bin/
+          npm install -g --ignore-scripts jscpd@5.2.0
+          # yamllint is the one license exception: GPL-3.0-or-later, deliberately
+          # excluded from the permissive-only lockfile, installed by exact pin.
+          python3 -m pip install --quiet yamllint==1.38.0
+          ACTIONLINT_VERSION=1.7.12
+          curl --connect-timeout 10 --max-time 300 -sSfL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" -o /tmp/actionlint.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  /tmp/actionlint.tar.gz" | sha256sum --check --status
+          mkdir /tmp/actionlintx && tar xz -C /tmp/actionlintx -f /tmp/actionlint.tar.gz
+          sudo mv /tmp/actionlintx/actionlint /usr/local/bin/
+          # The python-native gate tools install from the hash-pinned lockfile;
+          # yamllint is the GPL exception above, installed by exact pin.
+          python3 -m pip install --require-hashes -r requirements-lock.txt
+          OSV_VERSION=2.5.1
+          curl --connect-timeout 10 --max-time 300 -sSfL "https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}/osv-scanner_linux_amd64" -o /tmp/osv-scanner
+          echo "f9f25499a2c8cc367b3af45df2ea7eeca7fbccceab9c35079968f4b3652194be  /tmp/osv-scanner" | sha256sum --check --status
+          sudo mv /tmp/osv-scanner /usr/local/bin/
+          sudo chmod +x /usr/local/bin/osv-scanner
+      - name: Spell check (typos v1.50.1)
+        run: typos
+      - name: Markdown lint (markdownlint-cli2 v0.23.2)
+        run: markdownlint-cli2 "**/*.md"
+      - name: Link check (lychee v0.24.2)
+        run: lychee --no-progress .
+      - name: Secret scan (gitleaks v8.30.1)
+        # full-history scan (fetch-depth 0 above); the local gate scans the
+        # working tree with --no-git instead
+        run: gitleaks detect --source . --redact
+      - name: Copy-paste detection (jscpd v5.2.0)
+        run: jscpd
+      - name: Dependency advisories (osv-scanner v2.5.1)
+        run: |
+          osv-scanner scan --lockfile requirements-lock.txt
+          osv-scanner scan --no-resolve --lockfile requirements.txt
+      - name: License check (osv-scanner v2.5.1)
+        run: osv-scanner scan --lockfile requirements-lock.txt --licenses="MIT,Apache-2.0,ISC,BSD-3-Clause,BSD-2-Clause,MPL-2.0,PSF-2.0,Unicode-3.0,Python-2.0,Unlicense,CC0-1.0,0BSD,Apache-1.1,BSD-3-Clause-Clear,LGPL-3.0-only,BlueOak-1.0.0,CC-BY-3.0"
+      - name: Workflow YAML lint (yamllint v1.38.0)
+        # Initialized-repo layout: every workflow lives in .github/workflows/.
+        run: yamllint ./.github/workflows/*.yml ./.github/ISSUE_TEMPLATE/*.yaml ./.pre-commit-config.yaml
+      - name: Workflow lint (actionlint v1.7.12)
+        run: actionlint ./.github/workflows/*.yml
+      - name: Unused dependencies (deptry v0.25.1)
+        run: deptry .
+      - name: Dead code (vulture v2.16)
+        run: vulture scripts vulture-allowlist.py
+      - name: Import layers (import-linter v2.15)
+        run: lint-imports
+      - name: Lockfile integrity (hash-pinned install)
+        run: pip install --require-hashes --dry-run -r requirements-lock.txt

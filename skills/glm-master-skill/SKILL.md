@@ -26,38 +26,37 @@ This is a **documentation-only** master skill.
 
 ---
 
-
 ## Official Skills Catalog / 官方技能目录
 
 ### GLM-OCR
 
 | Skill | Purpose | Link |
-|---|---|---|
-| `glmocr` | General OCR (text extraction) | https://github.com/zai-org/GLM-OCR/tree/main/skills/glmocr |
-| `glmocr-table` | Table extraction | https://github.com/zai-org/GLM-OCR/tree/main/skills/glmocr-table |
-| `glmocr-formula` | Formula extraction | https://github.com/zai-org/GLM-OCR/tree/main/skills/glmocr-formula |
-| `glmocr-handwriting` | Handwriting OCR | https://github.com/zai-org/GLM-OCR/tree/main/skills/glmocr-handwriting |
-| `sdk` | GLM-OCR SDK guidance | https://github.com/zai-org/GLM-OCR/tree/main/skills/sdk |
+| --- | --- | --- |
+| `glmocr` | General OCR (text extraction) | <https://github.com/zai-org/GLM-OCR/tree/main/skills/glmocr> |
+| `glmocr-table` | Table extraction | <https://github.com/zai-org/GLM-OCR/tree/main/skills/glmocr-table> |
+| `glmocr-formula` | Formula extraction | <https://github.com/zai-org/GLM-OCR/tree/main/skills/glmocr-formula> |
+| `glmocr-handwriting` | Handwriting OCR | <https://github.com/zai-org/GLM-OCR/tree/main/skills/glmocr-handwriting> |
+| `sdk` | GLM-OCR SDK guidance | <https://github.com/zai-org/GLM-OCR/tree/main/skills/sdk> |
 
 ### GLM-Image
 
 | Skill | Purpose | Link |
 |---|---|---|
-| `glm-image-generation` | Text-to-image generation | https://github.com/zai-org/GLM-Image/tree/main/skills/glm-image-generation |
+| `glm-image-generation` | Text-to-image generation | <https://github.com/zai-org/GLM-Image/tree/main/skills/glm-image-generation> |
 
 ### GLM-V
 
 | Skill | Purpose | Link |
-|---|---|---|
-| `glmv-caption` | Image/video/file captioning | https://github.com/zai-org/GLM-V/tree/main/skills/glmv-caption |
-| `glmv-prompt-gen` | Prompt generation from visual input | https://github.com/zai-org/GLM-V/tree/main/skills/glmv-prompt-gen |
-| `glmv-resume-screen` | Resume screening | https://github.com/zai-org/GLM-V/tree/main/skills/glmv-resume-screen |
-| `glmv-grounding` | Image/video target localization & bounding-box visualization | https://github.com/zai-org/GLM-V/tree/main/skills/glmv-grounding |
-| `glmv-doc-based-writing` | Document-based content generation (PDF/DOCX) | https://github.com/zai-org/GLM-V/tree/main/skills/glmv-doc-based-writing |
-| `glmv-pdf-to-ppt` | PDF to HTML presentation conversion | https://github.com/zai-org/GLM-V/tree/main/skills/glmv-pdf-to-ppt |
-| `glmv-pdf-to-web` | PDF to academic project website conversion | https://github.com/zai-org/GLM-V/tree/main/skills/glmv-pdf-to-web |
-| `glmv-prd-to-app` | Build full-stack web app from PRD documents & prototypes | https://github.com/zai-org/GLM-V/tree/main/skills/glmv-prd-to-app |
-| `glmv-web-replication` | Frontend visual replication of public websites | https://github.com/zai-org/GLM-V/tree/main/skills/glmv-web-replication |
+| --- | --- | --- |
+| `glmv-caption` | Image/video/file captioning | <https://github.com/zai-org/GLM-V/tree/main/skills/glmv-caption> |
+| `glmv-prompt-gen` | Prompt generation from visual input | <https://github.com/zai-org/GLM-V/tree/main/skills/glmv-prompt-gen> |
+| `glmv-resume-screen` | Resume screening | <https://github.com/zai-org/GLM-V/tree/main/skills/glmv-resume-screen> |
+| `glmv-grounding` | Image/video target localization & bounding-box visualization | <https://github.com/zai-org/GLM-V/tree/main/skills/glmv-grounding> |
+| `glmv-doc-based-writing` | Document-based content generation (PDF/DOCX) | <https://github.com/zai-org/GLM-V/tree/main/skills/glmv-doc-based-writing> |
+| `glmv-pdf-to-ppt` | PDF to HTML presentation conversion | <https://github.com/zai-org/GLM-V/tree/main/skills/glmv-pdf-to-ppt> |
+| `glmv-pdf-to-web` | PDF to academic project website conversion | <https://github.com/zai-org/GLM-V/tree/main/skills/glmv-pdf-to-web> |
+| `glmv-prd-to-app` | Build full-stack web app from PRD documents & prototypes | <https://github.com/zai-org/GLM-V/tree/main/skills/glmv-prd-to-app> |
+| `glmv-web-replication` | Frontend visual replication of public websites | <https://github.com/zai-org/GLM-V/tree/main/skills/glmv-web-replication> |
 
 ---
 
@@ -117,12 +116,13 @@ Then follow that skill's own `SKILL.md` for exact setup steps.
 Most GLM skills require the environment variable `ZHIPU_API_KEY`. This master skill itself does **not** read or use the key, but downstream skills will.
 
 > **Security best practices:**
+>
 > - Create a **limited-scope** API key with only the permissions needed for the skills you plan to use.
 > - Store the key in environment variables only — **never hardcode** it in source files or commit it to version control.
 > - Add `ZHIPU_API_KEY` to your `.gitignore` if storing it in a `.env` file.
-> - Rotate the key periodically and revoke unused keys at https://bigmodel.cn/usercenter/proj-mgmt/apikeys.
+> - Rotate the key periodically and revoke unused keys at <https://bigmodel.cn/usercenter/proj-mgmt/apikeys>.
 
-Get API key: https://bigmodel.cn/usercenter/proj-mgmt/apikeys
+Get API key: <https://bigmodel.cn/usercenter/proj-mgmt/apikeys>
 
 Set in shell:
 
@@ -149,12 +149,12 @@ When user asks for GLM OCR / GLM Image / GLM-V capabilities:
 
 ## Resource Links
 
-- GLM-5: https://github.com/zai-org/GLM-5
-- GLM-OCR: https://github.com/zai-org/GLM-OCR
-- GLM-Image: https://github.com/zai-org/GLM-Image
-- GLM-V: https://github.com/zai-org/GLM-V
-- API Docs: https://docs.bigmodel.cn/
-- API Key: https://bigmodel.cn/usercenter/proj-mgmt/apikeys
+- GLM-5: <https://github.com/zai-org/GLM-5>
+- GLM-OCR: <https://github.com/zai-org/GLM-OCR>
+- GLM-Image: <https://github.com/zai-org/GLM-Image>
+- GLM-V: <https://github.com/zai-org/GLM-V>
+- API Docs: <https://docs.bigmodel.cn/>
+- API Key: <https://bigmodel.cn/usercenter/proj-mgmt/apikeys>
 
 ---
 

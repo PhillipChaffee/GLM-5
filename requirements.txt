@@ -1,3 +1,4 @@
 transformers>=5.15.0
 pre-commit>=4.6.2
-accelerate>=1.14.0
+accelerate>=1.15.0
+pypdf==6.19.0

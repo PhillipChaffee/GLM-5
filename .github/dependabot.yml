@@ -1,0 +1,10 @@
+# Keeps the SHA-pinned GitHub Actions current: Dependabot raises one PR per
+# outdated action and updates the SHA and its # version comment together.
+# The tag-pinned CI binaries are NOT covered by any ecosystem — they bump on
+# the recorded pin-review cadence (see AGENTS.md's "Lint and gates").
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

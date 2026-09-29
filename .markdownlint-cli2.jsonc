@@ -1,0 +1,27 @@
+{
+  // Reasons live next to each entry; everything else runs at markdownlint
+  // defaults.
+  "config": {
+    // the docs wrap by hand and carry wide tables; an 80-column gate would
+    // force a mass restyle instead of a fix
+    "MD013": false,
+    // Upstream GLM tables contain long URLs; visual pipe alignment would
+    // require rewrapping translated model listings and skill catalogs.
+    "MD060": false,
+    // skill documents open several top-level sections by convention
+    // (# Goal, # Inputs, # Workflow)
+    "MD025": false,
+    // the landing README centers its header (logo above the H1) with HTML
+    // on purpose
+    "MD033": false,
+    // the landing README opens with a bold middot tagline, not a heading
+    "MD036": false,
+    // 1 hit: the landing README opens with the centered header block — HTML
+    // div, logo above the H1, badges and tagline inside — by design
+    "MD041": false,
+    // shell scripts legitimately use tab indentation; tabs inside fenced
+    // shell blocks are the script's own style, not doc sloppiness
+    "MD010": { "code_blocks": false }
+  },
+  "globs": ["**/*.md"]
+}

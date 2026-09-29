@@ -1,0 +1,257 @@
+# The enforcement surface of a strict Python repository: ruff (ALL minus
+# documented ignores), mypy --strict + beyond, pytest with a coverage gate at
+# >= 95% with branch coverage, and ruff format. Every non-default choice
+# carries its reason; an entry whose reason dies gets deleted on the next
+# review.
+#
+# Adapted from full-lint/python/pyproject.toml for this fork's scripts package.
+
+[project]
+name = "glm-5"
+version = "0.1.0"
+requires-python = ">=3.12"          # the floor every gate must hold on; ruff also infers its target-version from this line
+dependencies = ["pypdf>=6.19.0"]
+# The experiments/ research stack, declared so deptry's DEP001 sees the
+# imports it scans. Names only, no pins: the Modal images in
+# experiments/proxy-run pin their own image layers, and the shipped
+# lockfile (the gate installs) must stay lean — nothing here installs
+# into the gate venvs. deepspec is absent on purpose: it is vendored from
+# the DeepSpec repo at image-build time (DEEPSPEC_SHA in
+# experiments/proxy-run/dspark_proxy.py), not a PyPI package, so deptry
+# carries the documented exception instead.
+[project.optional-dependencies]
+experiments = ["torch", "modal", "datasets", "huggingface_hub"]
+
+[tool.ruff]
+line-length = 100                   # 88 is ruff's default; 100 is a deliberate widening — the formatter wraps code to it and E501 flags what wrapping cannot touch (long strings, comments)
+
+[tool.ruff.format]
+docstring-code-format = true        # docstring examples get the same formatter guarantees as code; the only opt-out is an invalid example, which ruff leaves untouched
+
+[tool.ruff.lint]
+# ALL-minus-ignores, not an explicit list: new stable rule families join at
+# every version pin, the way clippy's pedantic+nursery groups do for rust.
+# An explicit list rots in the opposite direction — it asymptotically misses.
+# Preview rules are NOT part of ALL (ruff docs, rules page); preview stays
+# off, this file pins stable only.
+select = ["ALL"]
+
+ignore = [
+    # --- formatter-owned byte choices: when any of these is enabled ruff
+    # format warns (ruff formatter docs, Conflicting lint rules). Enabled
+    # below they would double-judge tokens the formatter already owns.
+    "W191", "E111", "E114", "E117",         # indentation style is the formatter's to emit
+    "D206", "D300",                         # docstring indentation and triple-quote choice are formatter output
+    "Q000", "Q001", "Q002", "Q003", "Q004", # quote style is formatter output
+    "COM812", "COM819",                     # trailing commas are the formatter's magic-trailing-comma decision
+    "ISC002",                               # multi-line implicit concatenation; ISC001 stays ON (it does not conflict at this pin)
+    # --- noise rules, one reason each
+    "CPY001",       # demands a copyright stamp on every file; a legal-layer policy, not a code-quality signal
+    "TRY003",       # fires on every `raise` carrying a message, demanding a custom class per message; EM101/EM102 keep the message discipline instead
+    "TD002",        # TODO authorship is git blame's job; the comment cannot stay in sync
+    # --- complexity consolidation: cognitive complexity is the only
+    # complexity metric this stack gates (complexipy, below). The unweighted
+    # counters of the cyclomatic family left with it: C901 (McCabe) and the
+    # branch/return counters PLR0912/PLR0911 judged the same shape the
+    # cognitive gate now owns. PLR0915 (too-many-statements) STAYS as the
+    # per-function size axis.
+    "C901",         # cyclomatic complexity (McCabe); superseded by complexipy's cognitive score
+    "PLR0911",      # too-many-returns is an unweighted cyclomatic-family counter
+    "PLR0912",      # too-many-branches is unweighted and nesting-blind where cognitive complexity is not
+    # --- the uniform TODO policy: FIX002 stays ON, a TODO marker fails the
+    # build. This matches the house rule in every other stack: TypeScript
+    # fails any todo/fixme comment (no-warning-comments), go fails any
+    # marker (godox), and rust greps the tree. TD001/TD003/TD004 stay on:
+    # they govern the tag, the issue link, and the colon wherever a TODO
+    # appears, including in a scoped per-file-ignores carve-out.
+]
+
+[tool.ruff.lint.pydocstyle]
+# Pure D-ruleset enforcement of docstrings: D100/D101/D102/D103/D104 mean no
+# undocumented module/class/method/function/package passes `ruff check`.
+# The convention is what resolves the classic conflict pairs: D211 (no blank
+# line before a class docstring) vs D203 and D212 (summary on the first line)
+# vs D213 demand opposite shapes, and Google keeps D211/D212, disabling
+# D203/D213 (plus D204, D215, D400, D401, D404, D406-D409, D413 per the ruff
+# settings table). D417 stays enabled: a documented parameter needs a
+# description.
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests earn a narrower bar; the shipped-code rules above stay in force for
+# everything else.
+"tests/**" = [
+    "D1",                                   # test names describe the case; the missing-docstring rules apply to shipped code
+    "S101",                                 # pytest's assertion mechanism is `assert`
+    "PLR2004",                              # tests compare literal inputs and outputs by design
+    "ARG001", "ARG002",                     # fixture and mock parameters are positional by name
+    "FBT001", "FBT002",                     # test helpers legitimately pass booleans positionally
+    "S105", "S106", "S107", "S108",         # fake credentials and temp paths are the point of a test
+    "SLF001",                               # tests inspect internals on purpose
+    "EM101", "EM102",                       # tests raise short inline messages
+    "INP001",                               # the tests directory is not an importable package
+]
+
+"experiments/**" = [
+    # The research tree runs inside Modal images and via `modal run`, never
+    # as imported package code: the proxy-run directory name carries a
+    # hyphen on purpose, so it cannot be a regular package and INP001's
+    # remedy (an __init__.py) would create one that import syntax rejects.
+    "INP001",
+    # subprocess commands are repo-authored literal lists whose binaries
+    # (vllm, python) resolve from the container PATH by design; there is no
+    # untrusted input to confirm.
+    "S603", "S607",
+    # dataset shuffling is seeded for reproducible evals (the seed is a CLI
+    # flag); cryptographic randomness would break reproducibility.
+    "S311",
+    # the stage-dispatch entrypoint signature IS the CLI surface: each
+    # parameter is one `modal run` flag, so the count is contractual.
+    "PLR0913",
+]
+
+"experiments/proxy-run/dspark_proxy.py" = [
+    # Modal image-build helpers import their stack inside the function:
+    # `modal run` parses this file locally, where huggingface_hub is not
+    # installed; moving the import to module level breaks the parse.
+    "PLC0415",
+]
+
+[tool.complexipy]
+# The cognitive-complexity gate (complexipy 8.0.1, the pin in
+# requirements-lock.txt): any function scoring above max-complexity-allowed
+# fails `complexipy .` with exit 1. Threshold 15 — complexipy's documented
+# default, cited as Sonar's own S3776 default, the parity anchor every
+# language in this baseline gates at. complexipy documents its scoring as
+# anchored on the SonarSource cognitive-complexity whitepaper; one measured
+# divergence is recorded honestly: same-operator boolean runs count
+# per-operator (`a and b and c` = 2 where the whitepaper counts 1; mixed
+# `a and b or c` = 3 where it counts 2), so a boolean-heavy chain can read
+# slightly stricter than the spec. Remedy: extract a function
+# (`--suggest-refactors` prints deterministic plans).
+max-complexity-allowed = 15
+
+[tool.mypy]
+strict = true
+# strict's own flag list (mypy 2.3.1 --strict): disallow-any-generics,
+# disallow-subclassing-any, disallow-untyped-calls, disallow-untyped-defs,
+# disallow-incomplete-defs, check-untyped-defs, disallow-untyped-decorators
+# (so decorators need no separate line), warn-redundant-casts,
+# warn-unused-ignores, warn-return-any, no-implicit-reexport,
+# strict-equality, extra-checks.
+warn_unreachable = true
+# Beyond strict on purpose: mypy docs state warn-unreachable is NOT part of
+# strict. It surfaces dead branches and redundant conditions after type
+# analysis. Flaky beyond-strict candidates (disallow_any_explicit,
+# disallow_any_expr, disallow_any_unimported) are named here and left
+# disabled instead of enabled.
+python_version = "3.12"
+# Default is the running interpreter's version; pinned to the
+# requires-python floor so the type scale does not drift with each dev's env.
+
+[[tool.mypy.overrides]]
+# The experiments/ research stack is not installed in the gate environment:
+# torch/modal/datasets/huggingface_hub are heavy runtime wheels kept out of
+# the shipped lockfile (they are declared in
+# [project.optional-dependencies].experiments so deptry sees them), and
+# deepspec is vendored into the Modal image at build time. Their imports
+# resolve to Any here; the code that uses them is still fully annotated and
+# checked.
+module = [
+    "torch", "torch.*",
+    "modal", "modal.*",
+    "datasets", "datasets.*",
+    "huggingface_hub", "huggingface_hub.*",
+    "deepspec", "deepspec.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The @app.function / @app.local_entrypoint decorators come from modal,
+# which resolves to Any in the gate environment, so strict's
+# disallow-untyped-decorators would flag every Modal stage function as
+# untyped. Scoped to the experiments modules: shipped code keeps the
+# full rule. Module names are bare because experiments/ carries no
+# __init__.py (its directory names are not importable identifiers), so
+# mypy derives top-level names; if __init__.py files ever appear, these
+# stop matching and the rule fails loudly again — the desired
+# fail-closed direction.
+module = ["dspark_proxy", "timed_eval", "make_split"]
+disallow_untyped_decorators = false
+
+[tool.pytest.ini_options]
+# The pytest-cov documented idiom (config docs): --cov=<package> measures
+# only the package — bare --cov would swallow every installed module —
+# term-missing prints uncovered lines, and -ra reports all outcomes except
+# passed. pytest exits nonzero when coverage's fail_under (below) is unmet,
+# so this one command IS the coverage gate.
+addopts = "--cov=scripts --cov-report=term-missing --cov-report=xml -ra"
+testpaths = [
+    "tests",    # deterministic discovery: don't sweep stray test-looking files
+]
+pythonpath = [
+    ".",        # pytest does not put the repo root on sys.path itself; the package sits there
+]
+
+[tool.coverage.run]
+branch = true
+# Branch coverage ON per house rule: every branch destination is an execution
+# opportunity, added to both the count and the percentage (coverage.py
+# branch/config docs). Measurement rides coverage.py's C tracer (ctrace, the
+# default core through Python 3.13); on 3.14+ the sysmon default does not
+# support branch in 3.12/3.13 terms, so if you upgrade the floor, re-verify
+# the gate under the new interpreter — it was proven on 3.13.3 and 3.14.2.
+
+[tool.coverage.report]
+fail_under = 95
+# coverage.py exits with status 2 below this; pytest surfaces it as exit 1
+# ("FAIL Required test coverage of 95.0% not reached"), failing the CI job.
+# The percentage is branch-inclusive when branch = true above.
+
+[tool.deptry]
+# deptry compares the imports the code makes against the dependencies this
+# file declares ([project.dependencies]). Every default stays, so all four
+# rules fire: DEP001 (imported but not declared), DEP002 (declared but never
+# imported), DEP003 (imported but only transitive), and DEP004 (a dev
+# dependency imported in shipped code). The default exclude list already
+# covers tests, .venv, and .git. No entry here means no override to reason
+# about; an exception goes in [tool.deptry.per_rule_ignores] with its reason.
+
+[tool.deptry.per_rule_ignores]
+# deepspec is vendored from the DeepSpec repo inside the Modal image
+# (DEEPSPEC_SHA in experiments/proxy-run/dspark_proxy.py): not a PyPI
+# package, so DEP001 cannot be satisfied by declaration. The PyPI stack it
+# rides with (torch, modal, datasets, huggingface_hub) is declared in
+# [project.optional-dependencies].experiments.
+DEP001 = ["deepspec"]
+
+[tool.vulture]
+# vulture reports names defined but never referenced. Paths are passed on
+# the command line (vulture 2.16 still requires at least one CLI path even
+# with a pyproject table): the shipped package plus the allowlist file.
+# Tests stay out of the scan on purpose: pytest fixtures and marks are
+# injected dynamically, so a test scan reads as false positives.
+# min_confidence = 60 keeps every category vulture can report (vulture docs,
+# confidence table: 60% covers attributes, classes, functions, methods,
+# properties, and variables; imports and unreachable code sit higher). The
+# allowlist is the noise valve, and every vulture-allowlist.py entry carries
+# its reason.
+min_confidence = 60
+
+[tool.mutmut]
+# mutmut runs nightly in the scheduled mutation workflow (mutation.yml),
+# never on the PR path: a full mutation run scales with the codebase, so
+# it cannot sit between a commit and a merge. source_paths carries the
+# package name, spelled the same as --cov above so a rename of scripts/
+# moves both together.
+source_paths = ["scripts"]
+# mutmut runs pytest to learn which tests reach which function; the tests/
+# selection keeps discovery from sweeping stray files.
+pytest_add_cli_args_test_selection = ["tests/"]
+# The coverage addopts above would run the 95% coverage gate against the
+# mutated trampolines inside mutants/ and fail stats collection before any
+# mutant is tested ("failed to collect stats. runner returned 1" — observed
+# on the first mutation run). Clearing addopts is the documented mutmut
+# override for exactly this: mutation runs need pytest selection, not the
+# cov gate.
+pytest_add_cli_args = ["-o", "addopts="]

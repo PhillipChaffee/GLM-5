@@ -1,0 +1,11 @@
+{
+  "//": "Threshold: fail when more than 5% of tokens are duplicated; ignore globs exclude the CI orchestration file, runner scripts, coverage output, Markdown prose, and extracted paper text (reference material, not maintained code).",
+  "threshold": 5,
+  "ignore": [
+    "**/quality.yml",
+    "**/run-gates.sh",
+    "**/coverage/**",
+    "papers/*.txt",
+    "**/*.md"
+  ]
+}

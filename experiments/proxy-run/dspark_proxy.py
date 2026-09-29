@@ -1,10 +1,17 @@
+"""DSpark proxy-run pipeline on Modal: split, regen, cache, train, evaluate.
+
+Stages run against the DeepSpec repo pinned at DEEPSPEC_SHA inside Modal
+images; the volume carries data, caches, checkpoints, and results.
+"""
+
 from __future__ import annotations
 
-import os
 import subprocess
+import sys
 import time
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 import modal
 
@@ -18,11 +25,13 @@ TARGET = "Qwen/Qwen3-4B"
 RELEASED_DRAFT = "deepseek-ai/dspark_qwen3_4b_block7"
 LOCAL_DIR = Path(__file__).parent.resolve()
 DEFAULT_TASKS = "gsm8k:300,math500:300,humaneval:164,mbpp:256,mt-bench:80,alpaca:300"
+MAX_LISTED_FILES = 60  # inspect lists at most this many files per directory
 
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
 
-def _bake_weights():
+def _bake_weights() -> None:
+    """Pre-download the target and released-drafter weights into the image."""
     from huggingface_hub import snapshot_download
 
     snapshot_download(TARGET)
@@ -68,21 +77,37 @@ util_image = (
 app = modal.App("dspark-proxy-run")
 
 
-def _run(cmd, cwd=None):
-    print("+ " + " ".join(cmd), flush=True)
-    result = subprocess.run(cmd, cwd=cwd)
-    if result.returncode != 0:
-        raise RuntimeError(f"command failed rc={result.returncode}: {' '.join(cmd)}")
+def _log(message: str) -> None:
+    """Print a line immediately (the print-free lint gate owns this shape)."""
+    sys.stdout.write(f"{message}\n")
+    sys.stdout.flush()
+
+
+def _run(cmd: list[str], cwd: str | None = None) -> None:
+    """Run a command, failing loudly on a nonzero exit."""
+    _log("+ " + " ".join(cmd))
+    try:
+        subprocess.run(cmd, cwd=cwd, check=True)
+    except subprocess.CalledProcessError as exc:
+        msg = f"command failed rc={exc.returncode}: {' '.join(cmd)}"
+        raise RuntimeError(msg) from exc
 
 
 @app.function(image=util_image, volumes={VOL: volume}, timeout=3600, cpu=8, memory=32768)
-def split(sample_size: int = 20000, seed: int = 42):
-    _run([
-        "python", "/work/scripts/make_split.py",
-        "--sample-size", str(sample_size),
-        "--seed", str(seed),
-        "--output", f"{VOL}/data/perfectblend_train.jsonl",
-    ])
+def split(sample_size: int = 20000, seed: int = 42) -> None:
+    """Write the shuffled training split onto the volume."""
+    _run(
+        [
+            "python",
+            "/work/scripts/make_split.py",
+            "--sample-size",
+            str(sample_size),
+            "--seed",
+            str(seed),
+            "--output",
+            f"{VOL}/data/perfectblend_train.jsonl",
+        ]
+    )
     volume.commit()
 
 
@@ -93,7 +118,8 @@ def split(sample_size: int = 20000, seed: int = 42):
     volumes={VOL: volume},
     env={"HOME": HOME, "HF_HUB_CACHE": f"{HOME}/.cache/huggingface"},
 )
-def regen(sample_size: int = 20000, concurrency: int = 64, max_tokens: int = 4096):
+def regen(sample_size: int = 20000, concurrency: int = 64, max_tokens: int = 4096) -> None:
+    """Serve vLLM on the target and regenerate DeepSpec training data through it."""
     input_path = f"{VOL}/data/perfectblend_train.jsonl"
     output_path = f"{VOL}/data/regen.jsonl"
     t0 = time.time()
@@ -103,29 +129,47 @@ def regen(sample_size: int = 20000, concurrency: int = 64, max_tokens: int = 409
     deadline = time.time() + 30 * 60
     while True:
         if server.poll() is not None:
-            raise RuntimeError("vllm server exited during startup")
+            msg = "vllm server exited during startup"
+            raise RuntimeError(msg)
         try:
             urllib.request.urlopen("http://127.0.0.1:30000/health", timeout=5)
             break
-        except Exception:
+        except OSError as exc:
             if time.time() > deadline:
                 server.terminate()
-                raise RuntimeError("vllm server did not become healthy in 30 minutes")
+                msg = "vllm server did not become healthy in 30 minutes"
+                raise RuntimeError(msg) from exc
             time.sleep(10)
-    print(f"vllm healthy after {time.time() - t0:.0f}s", flush=True)
+    _log(f"vllm healthy after {time.time() - t0:.0f}s")
     try:
-        _run([
-            "python", f"{DEEPSPEC_DIR}/scripts/data/generate_train_data.py",
-            "--model", TARGET,
-            "--server-address", "127.0.0.1:30000",
-            "--concurrency", str(concurrency),
-            "--temperature", "0.7", "--top-p", "0.8", "--top-k", "20",
-            "--max-tokens", str(max_tokens),
-            "--disable-thinking", "--resume",
-            "--num-samples", str(sample_size),
-            "--input-file-path", input_path,
-            "--output-file-path", output_path,
-        ])
+        _run(
+            [
+                "python",
+                f"{DEEPSPEC_DIR}/scripts/data/generate_train_data.py",
+                "--model",
+                TARGET,
+                "--server-address",
+                "127.0.0.1:30000",
+                "--concurrency",
+                str(concurrency),
+                "--temperature",
+                "0.7",
+                "--top-p",
+                "0.8",
+                "--top-k",
+                "20",
+                "--max-tokens",
+                str(max_tokens),
+                "--disable-thinking",
+                "--resume",
+                "--num-samples",
+                str(sample_size),
+                "--input-file-path",
+                input_path,
+                "--output-file-path",
+                output_path,
+            ]
+        )
     finally:
         server.terminate()
         try:
@@ -134,7 +178,7 @@ def regen(sample_size: int = 20000, concurrency: int = 64, max_tokens: int = 409
             server.kill()
             server.wait(timeout=60)
     volume.commit()
-    print(f"regen done in {(time.time() - t0) / 60:.1f} min", flush=True)
+    _log(f"regen done in {(time.time() - t0) / 60:.1f} min")
 
 
 @app.function(
@@ -144,14 +188,23 @@ def regen(sample_size: int = 20000, concurrency: int = 64, max_tokens: int = 409
     volumes={VOL: volume},
     env={"HOME": HOME, "PYTHONPATH": DEEPSPEC_DIR},
 )
-def cache(local_batch_size: int = 16):
-    _run([
-        "python", "scripts/data/prepare_target_cache.py",
-        "--config", "config/dspark/dspark_qwen3_4b.py",
-        "--train-data-path", f"{VOL}/data/regen.jsonl",
-        "--output-dir", f"{VOL}/cache",
-        "--local-batch-size", str(local_batch_size),
-    ], cwd=DEEPSPEC_DIR)
+def cache(local_batch_size: int = 16) -> None:
+    """Build the target hidden-state cache from the regenerated data."""
+    _run(
+        [
+            "python",
+            "scripts/data/prepare_target_cache.py",
+            "--config",
+            "config/dspark/dspark_qwen3_4b.py",
+            "--train-data-path",
+            f"{VOL}/data/regen.jsonl",
+            "--output-dir",
+            f"{VOL}/cache",
+            "--local-batch-size",
+            str(local_batch_size),
+        ],
+        cwd=DEEPSPEC_DIR,
+    )
     volume.commit()
 
 
@@ -160,17 +213,33 @@ def cache(local_batch_size: int = 16):
     gpu="H100:4",
     timeout=24 * 3600,
     volumes={VOL: volume},
-    env={"HOME": HOME, "PYTHONPATH": DEEPSPEC_DIR, "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
+    env={
+        "HOME": HOME,
+        "PYTHONPATH": DEEPSPEC_DIR,
+        "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+    },
 )
-def train(exp_name: str = "dspark_block7_qwen3_4b", epochs: int = 10, local_batch_size: int = 4):
-    _run([
-        "python", "train.py",
-        "--config", "config/dspark/dspark_qwen3_4b.py",
-        "--opts", f"exp_name={exp_name}",
-        "--opts", f"train.num_train_epochs={epochs}",
-        "--opts", f"train.local_batch_size={local_batch_size}",
-        "--opts", "data.target_cache_path=/vol/cache",
-    ], cwd=DEEPSPEC_DIR)
+def train(
+    exp_name: str = "dspark_block7_qwen3_4b", epochs: int = 10, local_batch_size: int = 4
+) -> None:
+    """Train the block-7 DSpark drafter with DeepSpec on the cached states."""
+    _run(
+        [
+            "python",
+            "train.py",
+            "--config",
+            "config/dspark/dspark_qwen3_4b.py",
+            "--opts",
+            f"exp_name={exp_name}",
+            "--opts",
+            f"train.num_train_epochs={epochs}",
+            "--opts",
+            f"train.local_batch_size={local_batch_size}",
+            "--opts",
+            "data.target_cache_path=/vol/cache",
+        ],
+        cwd=DEEPSPEC_DIR,
+    )
     volume.commit()
 
 
@@ -181,7 +250,12 @@ def train(exp_name: str = "dspark_block7_qwen3_4b", epochs: int = 10, local_batc
     volumes={VOL: volume},
     env={"HOME": HOME, "PYTHONPATH": DEEPSPEC_DIR},
 )
-def train_smoke(exp_name: str = "dspark_block7_qwen3_4b_smoke", epochs: int = 2, local_batch_size: int = 2):
+def train_smoke(
+    exp_name: str = "dspark_block7_qwen3_4b_smoke",
+    epochs: int = 2,
+    local_batch_size: int = 2,
+) -> None:
+    """Run a short local training pass to smoke-test the pipeline."""
     train.local(
         exp_name=exp_name,
         epochs=epochs,
@@ -200,19 +274,28 @@ def evaluate(
     draft: str,
     tag: str,
     tasks: str = DEFAULT_TASKS,
+    *,
     max_new_tokens: int = 1024,
     confidence_threshold: float = 0.0,
     baseline: bool = False,
-):
-    os.makedirs(f"{VOL}/results", exist_ok=True)
+) -> None:
+    """Run the timed evaluator for one drafter and commit the result json."""
+    Path(f"{VOL}/results").mkdir(parents=True, exist_ok=True)
     cmd = [
-        "python", "/work/scripts/timed_eval.py",
-        "--target", TARGET,
-        "--draft", draft,
-        "--tasks", tasks,
-        "--max-new-tokens", str(max_new_tokens),
-        "--confidence-threshold", str(confidence_threshold),
-        "--out", f"{VOL}/results/{tag}.json",
+        "python",
+        "/work/scripts/timed_eval.py",
+        "--target",
+        TARGET,
+        "--draft",
+        draft,
+        "--tasks",
+        tasks,
+        "--max-new-tokens",
+        str(max_new_tokens),
+        "--confidence-threshold",
+        str(confidence_threshold),
+        "--out",
+        f"{VOL}/results/{tag}.json",
     ]
     if baseline:
         cmd.append("--baseline")
@@ -231,23 +314,30 @@ def evaluate_smoke(
     draft: str,
     tag: str,
     tasks: str = "gsm8k:12",
+    *,
     max_new_tokens: int = 256,
     confidence_threshold: float = 0.0,
     baseline: bool = False,
-):
+) -> None:
+    """Run the evaluator on a tiny task subset to smoke-test a drafter."""
     evaluate.local(
-        draft=draft, tag=tag, tasks=tasks, max_new_tokens=max_new_tokens,
-        confidence_threshold=confidence_threshold, baseline=baseline,
+        draft=draft,
+        tag=tag,
+        tasks=tasks,
+        max_new_tokens=max_new_tokens,
+        confidence_threshold=confidence_threshold,
+        baseline=baseline,
     )
 
 
 @app.function(image=util_image, volumes={VOL: volume}, timeout=600)
-def inspect():
+def inspect() -> None:
+    """Print a size summary of every directory on the volume."""
     volume.reload()
     for root in ("data", "cache", "results", "home/checkpoints", "home/tensorboard"):
         path = Path(VOL) / root
         if not path.exists():
-            print(f"{path}: missing", flush=True)
+            _log(f"{path}: missing")
             continue
         entries = []
         total = 0
@@ -256,21 +346,23 @@ def inspect():
                 size = item.stat().st_size
                 total += size
                 entries.append(f"  {item.relative_to(VOL)} {size}")
-        print(f"{path}: {total / 1e9:.2f} GB across {len(entries)} files", flush=True)
-        for line in entries[:60]:
-            print(line, flush=True)
-        if len(entries) > 60:
-            print(f"  ... {len(entries) - 60} more files")
+        _log(f"{path}: {total / 1e9:.2f} GB across {len(entries)} files")
+        for line in entries[:MAX_LISTED_FILES]:
+            _log(line)
+        if len(entries) > MAX_LISTED_FILES:
+            _log(f"  ... {len(entries) - MAX_LISTED_FILES} more files")
 
 
 @app.function(image=util_image, volumes={VOL: volume}, timeout=600)
 def fetch_result(name: str) -> bytes:
+    """Read one result json from the volume."""
     return (Path(VOL) / "results" / f"{name}.json").read_bytes()
 
 
 @app.local_entrypoint()
 def main(
     stage: str,
+    *,
     sample_size: int = 20000,
     seed: int = 42,
     concurrency: int = 64,
@@ -284,26 +376,47 @@ def main(
     confidence_threshold: float = 0.0,
     baseline: bool = False,
     foreground: bool = False,
-):
-    dispatch = {
-        "split": (split, dict(sample_size=sample_size, seed=seed)),
-        "regen": (regen, dict(sample_size=sample_size, concurrency=concurrency)),
-        "cache": (cache, dict()),
-        "train": (train, dict(exp_name=exp_name, epochs=epochs, local_batch_size=local_batch_size)),
-        "train-smoke": (train_smoke, dict(exp_name=exp_name, epochs=epochs, local_batch_size=local_batch_size)),
-        "eval": (evaluate, dict(
-            draft=draft, tag=tag, tasks=tasks, max_new_tokens=max_new_tokens,
-            confidence_threshold=confidence_threshold, baseline=baseline,
-        )),
-        "eval-smoke": (evaluate_smoke, dict(
-            draft=draft, tag=tag, tasks=tasks, max_new_tokens=max_new_tokens,
-            confidence_threshold=confidence_threshold, baseline=baseline,
-        )),
-        "inspect": (inspect, dict()),
+) -> None:
+    """Dispatch one pipeline stage; every flag maps to a stage parameter."""
+    dispatch: dict[str, tuple[Any, dict[str, Any]]] = {
+        "split": (split, {"sample_size": sample_size, "seed": seed}),
+        "regen": (regen, {"sample_size": sample_size, "concurrency": concurrency}),
+        "cache": (cache, {}),
+        "train": (
+            train,
+            {"exp_name": exp_name, "epochs": epochs, "local_batch_size": local_batch_size},
+        ),
+        "train-smoke": (
+            train_smoke,
+            {"exp_name": exp_name, "epochs": epochs, "local_batch_size": local_batch_size},
+        ),
+        "eval": (
+            evaluate,
+            {
+                "draft": draft,
+                "tag": tag,
+                "tasks": tasks,
+                "max_new_tokens": max_new_tokens,
+                "confidence_threshold": confidence_threshold,
+                "baseline": baseline,
+            },
+        ),
+        "eval-smoke": (
+            evaluate_smoke,
+            {
+                "draft": draft,
+                "tag": tag,
+                "tasks": tasks,
+                "max_new_tokens": max_new_tokens,
+                "confidence_threshold": confidence_threshold,
+                "baseline": baseline,
+            },
+        ),
+        "inspect": (inspect, {}),
     }
     fn, kwargs = dispatch[stage]
     if foreground:
-        print(fn.local(**kwargs))
+        sys.stdout.write(f"{fn.local(**kwargs)}\n")
     else:
         call = fn.spawn(**kwargs)
-        print(f"spawned stage={stage} call_id={call.object_id}")
+        sys.stdout.write(f"spawned stage={stage} call_id={call.object_id}\n")

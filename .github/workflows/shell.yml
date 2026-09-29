@@ -1,0 +1,86 @@
+# Adapted from full-lint/shell/ci.yml for this fork's extensionless shell script.
+permissions:
+  contents: read
+name: Shell
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned tools
+        run: |
+          SHELLCHECK_VERSION=0.11.0
+          curl --connect-timeout 10 --max-time 300 -sSfL "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" -o /tmp/shellcheck.tar.xz
+          echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  /tmp/shellcheck.tar.xz" | sha256sum --check --status
+          mkdir /tmp/shellcheckx && tar xJ -C /tmp/shellcheckx -f /tmp/shellcheck.tar.xz
+          sudo mv /tmp/shellcheckx/shellcheck-v${SHELLCHECK_VERSION}/shellcheck /usr/local/bin/
+          SHFMT_VERSION=3.14.0
+          curl --connect-timeout 10 --max-time 300 -sSfL "https://github.com/mvdan/sh/releases/download/v${SHFMT_VERSION}/shfmt_v${SHFMT_VERSION}_linux_amd64" -o /tmp/shfmt
+          echo "fe42021c7272ef2d67ea36cbc3031683c625d0badec733ef3a57b567246a0b66  /tmp/shfmt" | sha256sum --check --status
+          sudo mv /tmp/shfmt /usr/local/bin/
+          sudo chmod +x /usr/local/bin/shfmt
+          KCOV_VERSION=v42
+          curl --connect-timeout 10 --max-time 300 -sSfL "https://github.com/SimonKagstrom/kcov/releases/download/${KCOV_VERSION}/kcov-amd64.tar.gz" -o /tmp/kcov.tar.gz
+          echo "78aa17a5f6d27a867cc0540b1550051591d350423a1a0ef98d63c9ce7cc10f9d  /tmp/kcov.tar.gz" | sha256sum --check --status
+          mkdir /tmp/kcovx && tar xz -C /tmp/kcovx -f /tmp/kcov.tar.gz
+          sudo mv /tmp/kcovx/usr/local/bin/kcov /usr/local/bin/
+          # kcov v42's binary dlopens libbfd/libopcodes by the binutils
+          # 2.38 sonames of the distro it was built on; ubuntu-24.04
+          # runners ship binutils 2.42. libbinutils provides the runtime
+          # libs; symlinking the current sonames to the requested ones
+          # keeps the hash-pinned asset usable (kcov v43 publishes no
+          # Linux release assets — recorded in full-lint's ci.yml).
+          sudo apt-get install -y --no-install-recommends libbinutils
+          for name in libbfd libopcodes; do
+            latest="$(find /usr/lib/x86_64-linux-gnu -maxdepth 1 -name "${name}-2.*-system.so" | sort -V | tail -1)"
+            if [ -z "$latest" ]; then
+              echo "no ${name} runtime library on the runner; cannot shim kcov" >&2
+              exit 1
+            fi
+            sudo ln -s "$latest" "/usr/lib/x86_64-linux-gnu/${name}-2.38-system.so"
+          done
+          ASTGREP_VERSION=0.45.3
+          curl --connect-timeout 10 --max-time 300 -sSfL "https://github.com/ast-grep/ast-grep/releases/download/${ASTGREP_VERSION}/app-x86_64-unknown-linux-gnu.zip" -o /tmp/astgrep.zip
+          echo "f8ac830881339d1edee6b2652f54798c0f4da5a827f2db38a08ee31117783ce8  /tmp/astgrep.zip" | sha256sum --check --status
+          mkdir /tmp/astgrepx && unzip -q /tmp/astgrep.zip -d /tmp/astgrepx
+          sudo mv /tmp/astgrepx/ast-grep /usr/local/bin/
+          python -m pip install --require-hashes -r requirements-lock.txt
+      - name: Shell lint
+        run: for sh in $(git ls-files '*.sh' scripts/extract-paper); do shellcheck "$sh"; done
+      - name: Shell format
+        run: for sh in $(git ls-files '*.sh' scripts/extract-paper); do shfmt -d "$sh"; done
+      - run: ./test/run_tests.sh
+      - name: Coverage gate
+        run: ./coverage-gate.sh
+      - name: Shell file length
+        run: ./shell-effective-lines-gate.sh
+      - name: Shell header comment
+        run: for sh in $(git ls-files '*.sh' scripts/extract-paper); do ast-grep scan --rule ast-grep/header-comment.yml "$sh"; done
+      # The house TODO policy as a fail-closed grep, the same shape the rust
+      # folder uses: a TODO or FIXME marker in shell source fails the build,
+      # and there is no ignore mechanism — the remedy is to resolve the
+      # TODO. The exit code is captured because a plain `||` cannot express
+      # the gate: git grep exits 0 on MATCHES, 1 on no matches, and >1 on
+      # error, so only "no matches" (1) may pass; matches and errors both
+      # stay red. The option order matters: git parses a post-pattern
+      # --untracked as a revision (exit 128, verified on git 2.50.1), and
+      # --no-recurse-submodules neutralizes a local submodule.recurse=true
+      # that would otherwise reject --untracked.
+      - name: TODO policy (no TODO/FIXME markers in shell source)
+        run: "rc=0; git grep --untracked --no-recurse-submodules -nE 'TODO|FIXME' -- '*.sh' scripts/extract-paper || rc=$?; test \"$rc\" -eq 1"
+      - name: Upload shell coverage
+        if: always()
+        continue-on-error: true
+        uses: coverallsapp/github-action@8d6379e14d29928660c4ba802d8e85393440b329  # v2
+        with:
+          format: cobertura

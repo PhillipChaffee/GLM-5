@@ -1,0 +1,32 @@
+# ShellCheck file-wide configuration. ShellCheck uses only the FIRST
+# .shellcheckrc found from the script's directory upward, so this file
+# governs every script in the folder (repo root in a bootstrapped repo).
+#
+# Severity is deliberately absent: the rc key set is disable/enable/
+# extended-analysis/external-sources/source/source-path/shell only, and
+# the CLI default severity is "style" — already the strictest setting.
+# Passing -S anything would loosen the gate, not tighten it.
+#
+# The dialect is deliberately not pinned with shell=: ShellCheck deduces
+# it per file from the shebang, so bash scripts get full bash checking
+# and POSIX sh scripts get portability warnings. Sourced libraries
+# without a shebang carry a `# shellcheck shell=bash` directive instead
+# of blanket portability disables (SC2039/SC2030/SC2031).
+
+# Resolve `source` statements relative to the checked script; without
+# this, every sourced sibling is an unverifiable path.
+source-path=SCRIPTDIR
+# Follow source statements into other files. The default (false) exists
+# only because ShellCheck started as a remote service for checking
+# untrusted scripts; the man page: safe to enable "for normal
+# development".
+external-sources=true
+
+# Optional checks, the exact pair the shellcheck man page's own strict
+# example rc enables — the officially-authored strict-but-workable
+# baseline. The other nine optional checks stay off: the wiki warns
+# optional checks are "more subjective rather than more comprehensive,
+# and may conflict with each other", and enable=all is documented for
+# debugging and evaluation.
+enable=quote-safe-variables
+enable=check-unassigned-uppercase

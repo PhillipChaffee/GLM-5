@@ -1,8 +1,13 @@
+"""Write a shuffled open-perfectblend subset in DeepSpec train-jsonl format."""
+
 import argparse
 import json
+import sys
 from pathlib import Path
 
-ROLE_MAPPING = {
+from datasets import load_dataset
+
+ROLE_MAPPING: dict[str, str] = {
     "human": "user",
     "gpt": "assistant",
     "chatgpt": "assistant",
@@ -11,7 +16,8 @@ ROLE_MAPPING = {
 }
 
 
-def valid_conversations(conversations) -> bool:
+def valid_conversations(conversations: list[dict[str, str]]) -> bool:
+    """A conversation list usable as DeepSpec training data."""
     if not conversations or conversations[0]["role"] != "user":
         return False
     for message in conversations:
@@ -22,7 +28,8 @@ def valid_conversations(conversations) -> bool:
     return True
 
 
-def main():
+def main() -> None:
+    """Shuffle the open-perfectblend dataset and write the DeepSpec jsonl."""
     parser = argparse.ArgumentParser(
         description="Write a shuffled open-perfectblend subset in DeepSpec train-jsonl format."
     )
@@ -30,8 +37,6 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-
-    from datasets import load_dataset
 
     dataset = load_dataset("mlabonne/open-perfectblend", split="train")
     dataset = dataset.shuffle(seed=args.seed)
@@ -59,10 +64,8 @@ def main():
                 + "\n"
             )
             count += 1
-    print(
-        f"wrote {count} rows (skipped {skipped}) -> {args.output}",
-        flush=True,
-    )
+    sys.stdout.write(f"wrote {count} rows (skipped {skipped}) -> {args.output}\n")
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":

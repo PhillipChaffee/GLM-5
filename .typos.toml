@@ -1,0 +1,11 @@
+# Spell-check configuration. Default dictionary on; every non-default entry
+# carries its reason. Copied from full-lint's root file and trimmed to what
+# this repo can actually hit.
+[files]
+# PDF-derived paper sidecars contain broken line wraps and authors' names;
+# they are reference material, not source or documentation we maintain.
+extend-exclude = ["papers/*.txt"]
+
+[default.extend-identifiers]
+# ruff's copyright rule family, not the word "copy"
+CPY001 = "CPY001"

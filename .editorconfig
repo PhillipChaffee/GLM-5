@@ -1,0 +1,25 @@
+# The formatter gate reads this file: shfmt applies EditorConfig options
+# when no parser/printer CLI flag is given, so the format gate is the
+# man page's own CI pattern — `shfmt -d .` — with no flags. Keys are the
+# documented v3.14.x set; upgrading past 3.14.x renames keys
+# (function_next_line -> block_next_line on master) and adds
+# language_dialect/case_indent precedence — re-run the gates and fix
+# what moved when bumping the pin.
+[*.sh]
+# Tabs, shfmt's own default (-i 0) and the style the house's shell
+# scripts already use; the format gate keeps it explicit so nothing
+# depends on a shfmt default staying put.
+indent_style = tab
+# shfmt's simplifications — the strictest formatter analogue.
+simplify = true
+# && and | start the continuation line (shfmt's -bn).
+binary_next_line = true
+# switch cases indent under their switch (shfmt's -ci).
+switch_case_indent = true
+
+# scripts/extract-paper is an extensionless Bash executable.
+[scripts/extract-paper]
+indent_style = tab
+simplify = true
+binary_next_line = true
+switch_case_indent = true

@@ -1,12 +1,19 @@
+"""Timed DSpark evaluation: accepted length plus wall-clock latency/throughput.
+
+Target-only baseline and confidence-threshold pruning included; mirrors
+deepspec eval.py's protocol on a task subset.
+"""
+
 import argparse
 import json
 import random
+import sys
 import time
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-
 from deepspec.data.parser import encode_chat_messages
 from deepspec.eval.base_evaluator import (
     load_and_process_dataset,
@@ -19,7 +26,8 @@ from deepspec.utils import seed_all
 DEFAULT_TASKS = "gsm8k:300,math500:300,humaneval:164,mbpp:256,mt-bench:80,alpaca:300"
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
+    """Parse the eval CLI and split the task list into (name, cap) pairs."""
     parser = argparse.ArgumentParser(
         description=(
             "Timed DSpark evaluation: accepted length plus wall-clock "
@@ -38,19 +46,22 @@ def parse_args():
     parser.add_argument("--out", type=str, default=None)
     cli = parser.parse_args()
     cli.tasks = [
-        (name, int(cap))
-        for name, cap in (item.split(":") for item in cli.tasks.split(",") if item)
+        (name, int(cap)) for name, cap in (item.split(":") for item in cli.tasks.split(",") if item)
     ]
     return cli
 
 
-def allreduce_scalar(value: float, op) -> float:
+def allreduce_scalar(value: float, op: dist.ReduceOp) -> float:
+    """All-reduce one scalar across ranks and return rank 0's view."""
     tensor = torch.tensor([value], dtype=torch.float64, device=torch.cuda.current_device())
     dist.all_reduce(tensor, op=op)
-    return tensor[0].item()
+    return float(tensor[0].item())
 
 
-def timed_spec_run(evaluator, dataset_name: str, max_samples):
+def timed_spec_run(
+    evaluator: Qwen3DSparkEvaluator, dataset_name: str, max_samples: int | None
+) -> dict[str, object]:
+    """One speculative-eval pass over a dataset, with timing and confidences."""
     recorder = evaluator.confidence_head_recorder
     if recorder is not None:
         recorder.start()
@@ -82,7 +93,9 @@ def timed_spec_run(evaluator, dataset_name: str, max_samples):
     row["wall_s"] = wall_max
     row["tok_s_spec_total"] = tokens_total / wall_max if wall_max > 0 else None
     row["tok_s_spec_per_stream"] = tokens_total / (wall_max * world) if wall_max > 0 else None
-    row["ms_per_round_per_stream"] = 1000.0 * wall_max * world / rounds_total if rounds_total > 0 else None
+    row["ms_per_round_per_stream"] = (
+        1000.0 * wall_max * world / rounds_total if rounds_total > 0 else None
+    )
     if confidence_row is not None:
         row["confidence_summary"] = summarize_confidence_row(confidence_row)
         row["confidence_per_position"] = [
@@ -99,7 +112,10 @@ def timed_spec_run(evaluator, dataset_name: str, max_samples):
     return row
 
 
-def timed_baseline_run(evaluator, dataset_name: str, max_samples):
+def timed_baseline_run(
+    evaluator: Qwen3DSparkEvaluator, dataset_name: str, max_samples: int | None
+) -> dict[str, object]:
+    """One target-only generation pass over a dataset, with timing."""
     device = evaluator.device
     rank = dist.get_rank()
     world = dist.get_world_size()
@@ -151,26 +167,29 @@ def timed_baseline_run(evaluator, dataset_name: str, max_samples):
     }
 
 
-def main(local_rank: int, cli):
-    ns = type("Args", (), {})()
-    ns.target_name_or_path = cli.target
-    ns.draft_name_or_path = cli.draft
-    ns.max_new_tokens = cli.max_new_tokens
-    ns.temperature = cli.temperature
-    ns.confidence_threshold = cli.confidence_threshold
-    ns.tensorboard_dir = None
-    ns.step = None
-    ns.seed = cli.seed
-    ns.tasks = cli.tasks
+def main(local_rank: int, cli: argparse.Namespace) -> None:
+    """Run the timed eval across all configured tasks and write rank 0's json."""
+    ns = argparse.Namespace(
+        target_name_or_path=cli.target,
+        draft_name_or_path=cli.draft,
+        max_new_tokens=cli.max_new_tokens,
+        temperature=cli.temperature,
+        confidence_threshold=cli.confidence_threshold,
+        tensorboard_dir=None,
+        step=None,
+        seed=cli.seed,
+        tasks=cli.tasks,
+    )
     evaluator = Qwen3DSparkEvaluator(local_rank, ns)
     rows = []
     for dataset_name, max_samples in cli.tasks:
         if cli.baseline:
             row = timed_baseline_run(evaluator, dataset_name, max_samples)
-            print(f"[baseline] {row}", flush=True)
+            sys.stdout.write(f"[baseline] {row}\n")
         else:
             row = timed_spec_run(evaluator, dataset_name, max_samples)
-            print(f"[spec] {json.dumps(row, default=str)}", flush=True)
+            sys.stdout.write(f"[spec] {json.dumps(row, default=str)}\n")
+        sys.stdout.flush()
         rows.append(row)
     if dist.get_rank() == 0 and cli.out:
         payload = {
@@ -184,9 +203,11 @@ def main(local_rank: int, cli):
             "tasks": [[name, cap] for name, cap in cli.tasks],
             "rows": rows,
         }
-        with open(cli.out, "w", encoding="utf-8") as handle:
+        out_path = Path(cli.out)
+        with out_path.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, default=str)
-        print(f"wrote {cli.out}", flush=True)
+        sys.stdout.write(f"wrote {cli.out}\n")
+        sys.stdout.flush()
     evaluator.clean_up()
 
 

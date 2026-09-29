@@ -105,7 +105,6 @@ GLM-5 专为复杂系统工程和长周期智能体任务而设计。在我们�
 - [Unsloth](https://github.com/unslothai/unsloth) — 参见 [guide](https://unsloth.ai/docs/models/glm-5.2)
 - 在 `Ascend NPU` 平台上部署时，支持 vLLM-Ascend、xLLM 、SGLang 等推理框架，参见 [这里](example/ascend.md)
 
-
 ### 注意事项
 
 - **GLM-5.2** 的 `reasoning_effort` 仅接受 `high` 和 `max` 两档，默认值为 `max`，回退行为相同。
