@@ -376,24 +376,27 @@ def push_to_hf(repo_id: str = "") -> None:
     user = api.whoami()["name"]
     repo = repo_id or f"{user}/dspark-proxy-run"
     api.create_repo(repo_id=repo, repo_type="dataset", private=False, exist_ok=True)
-    jobs: list[tuple[Path, str]] = []
     cache_dir = Path(VOL) / "cache"
-    for item in sorted(cache_dir.iterdir()):
-        if item.is_file():
-            jobs.append((item, f"cache/{item.name}"))
     data_dir = Path(VOL) / "data"
-    for item in sorted(data_dir.iterdir()):
-        if item.is_file():
-            jobs.append((item, f"data/{item.name}"))
+    jobs: list[tuple[Path, str]] = [
+        (item, f"cache/{item.name}") for item in sorted(cache_dir.iterdir()) if item.is_file()
+    ]
+    jobs.extend(
+        (item, f"data/{item.name}") for item in sorted(data_dir.iterdir()) if item.is_file()
+    )
     ckpt_dir = Path(VOL) / "home/checkpoints/deepspec/dspark_block7_qwen3_4b_full/step_380"
-    for name in ("model.safetensors", "config.json", "train_config.py"):
-        jobs.append((ckpt_dir / name, f"checkpoints/dspark_block7_qwen3_4b_full_step_380/{name}"))
+    jobs.extend(
+        (ckpt_dir / name, f"checkpoints/dspark_block7_qwen3_4b_full_step_380/{name}")
+        for name in ("model.safetensors", "config.json", "train_config.py")
+    )
     t0 = time.time()
     for idx, (src, dst) in enumerate(jobs, 1):
         size = src.stat().st_size
         _log(f"[{idx}/{len(jobs)}] {dst} {size / 1e9:.1f} GB uploading")
         f0 = time.time()
-        api.upload_file(path_or_fileobj=str(src), path_in_repo=dst, repo_id=repo, repo_type="dataset")
+        api.upload_file(
+            path_or_fileobj=str(src), path_in_repo=dst, repo_id=repo, repo_type="dataset"
+        )
         _log(f"[{idx}/{len(jobs)}] {dst} done in {(time.time() - f0) / 60:.1f} min")
     _log(f"ALL DONE in {(time.time() - t0) / 60:.1f} min -> https://huggingface.co/datasets/{repo}")
     volume.commit()
