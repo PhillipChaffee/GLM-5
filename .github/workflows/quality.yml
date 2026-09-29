@@ -139,6 +139,8 @@ jobs:
         run: yamllint ./.github/workflows/*.yml ./.github/ISSUE_TEMPLATE/*.yaml ./.pre-commit-config.yaml
       - name: Workflow lint (actionlint v1.7.12)
         run: actionlint ./.github/workflows/*.yml
+      - name: Pin digest format (sha256 embeds are 64 hex chars)
+        run: ./pin-digest-gate.sh
       - name: Unused dependencies (deptry v0.25.1)
         run: deptry .
       - name: Dead code (vulture v2.16)
