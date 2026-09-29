@@ -11,6 +11,16 @@ name = "glm-5"
 version = "0.1.0"
 requires-python = ">=3.12"          # the floor every gate must hold on; ruff also infers its target-version from this line
 dependencies = ["pypdf>=6.19.0"]
+# The experiments/ research stack, declared so deptry's DEP001 sees the
+# imports it scans. Names only, no pins: the Modal images in
+# experiments/proxy-run pin their own image layers, and the shipped
+# lockfile (the gate installs) must stay lean — nothing here installs
+# into the gate venvs. deepspec is absent on purpose: it is vendored from
+# the DeepSpec repo at image-build time (DEEPSPEC_SHA in
+# experiments/proxy-run/dspark_proxy.py), not a PyPI package, so deptry
+# carries the documented exception instead.
+[project.optional-dependencies]
+experiments = ["torch", "modal", "datasets", "huggingface_hub"]
 
 [tool.ruff]
 line-length = 100                   # 88 is ruff's default; 100 is a deliberate widening — the formatter wraps code to it and E501 flags what wrapping cannot touch (long strings, comments)
@@ -82,6 +92,31 @@ convention = "google"
     "INP001",                               # the tests directory is not an importable package
 ]
 
+"experiments/**" = [
+    # The research tree runs inside Modal images and via `modal run`, never
+    # as imported package code: the proxy-run directory name carries a
+    # hyphen on purpose, so it cannot be a regular package and INP001's
+    # remedy (an __init__.py) would create one that import syntax rejects.
+    "INP001",
+    # subprocess commands are repo-authored literal lists whose binaries
+    # (vllm, python) resolve from the container PATH by design; there is no
+    # untrusted input to confirm.
+    "S603", "S607",
+    # dataset shuffling is seeded for reproducible evals (the seed is a CLI
+    # flag); cryptographic randomness would break reproducibility.
+    "S311",
+    # the stage-dispatch entrypoint signature IS the CLI surface: each
+    # parameter is one `modal run` flag, so the count is contractual.
+    "PLR0913",
+]
+
+"experiments/proxy-run/dspark_proxy.py" = [
+    # Modal image-build helpers import their stack inside the function:
+    # `modal run` parses this file locally, where huggingface_hub is not
+    # installed; moving the import to module level breaks the parse.
+    "PLC0415",
+]
+
 [tool.complexipy]
 # The cognitive-complexity gate (complexipy 8.0.1, the pin in
 # requirements-lock.txt): any function scoring above max-complexity-allowed
@@ -113,6 +148,36 @@ warn_unreachable = true
 python_version = "3.12"
 # Default is the running interpreter's version; pinned to the
 # requires-python floor so the type scale does not drift with each dev's env.
+
+[[tool.mypy.overrides]]
+# The experiments/ research stack is not installed in the gate environment:
+# torch/modal/datasets/huggingface_hub are heavy runtime wheels kept out of
+# the shipped lockfile (they are declared in
+# [project.optional-dependencies].experiments so deptry sees them), and
+# deepspec is vendored into the Modal image at build time. Their imports
+# resolve to Any here; the code that uses them is still fully annotated and
+# checked.
+module = [
+    "torch", "torch.*",
+    "modal", "modal.*",
+    "datasets", "datasets.*",
+    "huggingface_hub", "huggingface_hub.*",
+    "deepspec", "deepspec.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The @app.function / @app.local_entrypoint decorators come from modal,
+# which resolves to Any in the gate environment, so strict's
+# disallow-untyped-decorators would flag every Modal stage function as
+# untyped. Scoped to the experiments modules: shipped code keeps the
+# full rule. Module names are bare because experiments/ carries no
+# __init__.py (its directory names are not importable identifiers), so
+# mypy derives top-level names; if __init__.py files ever appear, these
+# stop matching and the rule fails loudly again — the desired
+# fail-closed direction.
+module = ["dspark_proxy", "timed_eval", "make_split"]
+disallow_untyped_decorators = false
 
 [tool.pytest.ini_options]
 # The pytest-cov documented idiom (config docs): --cov=<package> measures
@@ -151,6 +216,14 @@ fail_under = 95
 # dependency imported in shipped code). The default exclude list already
 # covers tests, .venv, and .git. No entry here means no override to reason
 # about; an exception goes in [tool.deptry.per_rule_ignores] with its reason.
+
+[tool.deptry.per_rule_ignores]
+# deepspec is vendored from the DeepSpec repo inside the Modal image
+# (DEEPSPEC_SHA in experiments/proxy-run/dspark_proxy.py): not a PyPI
+# package, so DEP001 cannot be satisfied by declaration. The PyPI stack it
+# rides with (torch, modal, datasets, huggingface_hub) is declared in
+# [project.optional-dependencies].experiments.
+DEP001 = ["deepspec"]
 
 [tool.vulture]
 # vulture reports names defined but never referenced. Paths are passed on

@@ -36,7 +36,7 @@ jobs:
           sudo mv /tmp/kcovx/usr/local/bin/kcov /usr/local/bin/
           ASTGREP_VERSION=0.45.3
           curl --connect-timeout 10 --max-time 300 -sSfL "https://github.com/ast-grep/ast-grep/releases/download/${ASTGREP_VERSION}/app-x86_64-unknown-linux-gnu.zip" -o /tmp/astgrep.zip
-          echo "f8ac83088133d1edee6b2652f54798c0f4da5a827f2db38a08ee31117783ce8  /tmp/astgrep.zip" | sha256sum --check --status
+          echo "f8ac830881339d1edee6b2652f54798c0f4da5a827f2db38a08ee31117783ce8  /tmp/astgrep.zip" | sha256sum --check --status
           mkdir /tmp/astgrepx && unzip -q /tmp/astgrep.zip -d /tmp/astgrepx
           sudo mv /tmp/astgrepx/ast-grep /usr/local/bin/
           python -m pip install --require-hashes -r requirements-lock.txt
