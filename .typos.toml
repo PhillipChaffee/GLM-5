@@ -9,3 +9,6 @@ extend-exclude = ["papers/*.txt"]
 [default.extend-identifiers]
 # ruff's copyright rule family, not the word "copy"
 CPY001 = "CPY001"
+# SGLang's parallel-draft model family (docs/research/glm-flash-engines.md);
+# not a misspelling of "part"
+pard = "pard"
