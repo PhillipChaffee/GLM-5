@@ -34,6 +34,21 @@ jobs:
           echo "78aa17a5f6d27a867cc0540b1550051591d350423a1a0ef98d63c9ce7cc10f9d  /tmp/kcov.tar.gz" | sha256sum --check --status
           mkdir /tmp/kcovx && tar xz -C /tmp/kcovx -f /tmp/kcov.tar.gz
           sudo mv /tmp/kcovx/usr/local/bin/kcov /usr/local/bin/
+          # kcov v42's binary dlopens libbfd/libopcodes by the binutils
+          # 2.38 sonames of the distro it was built on; ubuntu-24.04
+          # runners ship binutils 2.42. libbinutils provides the runtime
+          # libs; symlinking the current sonames to the requested ones
+          # keeps the hash-pinned asset usable (kcov v43 publishes no
+          # Linux release assets — recorded in full-lint's ci.yml).
+          sudo apt-get install -y --no-install-recommends libbinutils
+          for name in libbfd libopcodes; do
+            latest="$(find /usr/lib/x86_64-linux-gnu -maxdepth 1 -name "${name}-2.*-system.so" | sort -V | tail -1)"
+            if [ -z "$latest" ]; then
+              echo "no ${name} runtime library on the runner; cannot shim kcov" >&2
+              exit 1
+            fi
+            sudo ln -s "$latest" "/usr/lib/x86_64-linux-gnu/${name}-2.38-system.so"
+          done
           ASTGREP_VERSION=0.45.3
           curl --connect-timeout 10 --max-time 300 -sSfL "https://github.com/ast-grep/ast-grep/releases/download/${ASTGREP_VERSION}/app-x86_64-unknown-linux-gnu.zip" -o /tmp/astgrep.zip
           echo "f8ac830881339d1edee6b2652f54798c0f4da5a827f2db38a08ee31117783ce8  /tmp/astgrep.zip" | sha256sum --check --status

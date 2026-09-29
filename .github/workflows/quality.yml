@@ -19,10 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20  # bounds a hung network gate; GitHub's default is 360
     concurrency:
-      # github.job keeps the two jobs of this workflow out of one group:
-      # a shared group cancels the second job as soon as the first starts
-      # (observed: hygiene cancelled at 0s on the first CI run)
-      group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}
+      # Two jobs in one workflow must not share a group (the second start
+      # cancels the first) and github.job reads empty at group-evaluation
+      # time, so the job name is hardcoded here rather than interpolated.
+      group: ${{ github.workflow }}-test-${{ github.ref }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
@@ -65,7 +65,7 @@ jobs:
     timeout-minutes: 20  # bounds a hung network gate; GitHub's default is 360
     concurrency:
       # job-unique group, same reason as the test job above
-      group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}
+      group: ${{ github.workflow }}-hygiene-${{ github.ref }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
