@@ -454,7 +454,7 @@ Tools
 User message 1
 Input
 Reasoning 3
-Answer 
+Answer
 Output
 Reasoning 1
 Tool call 1
@@ -476,7 +476,7 @@ Step 1 Step 2 Step 3 Step 1
  Interleaved thinking between tool calls
 Turn 2
 User message 2
-Answer 
+Answer
 Turn 1
 Tools
 User message 1
@@ -494,7 +494,7 @@ Step 1
 Turn 2
 User message 2
 Reasoning 3
-Answer 
+Answer
 w/o Preserved thinking w/ Preserved thinking
 or
 Figure 7: Illustration of Interleaved Thinking and Preserved Thinking.
@@ -1076,7 +1076,7 @@ Reward Hacking Type 1: Hard Truncation of Overlong Content
 Reward Hacking Type 2: Excessive Manipulation of Spacing or Layout
 1280×1015
 1280×720
-Hide the overlong 
+Hide the overlong
 content.
 1280×493
 1280×720
@@ -1350,8 +1350,8 @@ Click & Screenshot
 (Tool: “Playwright”)
       Observe & Analyze
 MISMATCH!
-FINAL DECISION: 
-critical logic error: point & 
+FINAL DECISION:
+critical logic error: point &
 prize name does not match
 Figure 10: Agent-as-a-Judge evaluation pipeline. Each generated frontend project is first built to
 verify static correctness. Successfully built instances are then interactively tested by an autonomous

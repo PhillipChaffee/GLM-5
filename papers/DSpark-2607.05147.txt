@@ -145,7 +145,7 @@ Among them, DFlash (Chen et al., 2026) is a state-of-the-art parallel drafter, w
 its draft model on rich context features extracted from the target model (KV injection). During
 prefill, hidden states from a set of target layers{𝑙1,... ,𝑙𝑚} are concatenated and projected into
 the draft hidden space:
-𝐻ctx =RMSNorm 
+𝐻ctx =RMSNorm
 𝑊𝑐[𝐻(𝑙 1);...;𝐻 (𝑙𝑚)], (2)
 where𝑊𝑐∈R 𝑑×𝑚𝑑 is a shared projection. These context features are injected into every draft
 layer by concatenating them with the draft block representations along the sequence dimension
@@ -182,7 +182,7 @@ D Mask Mask Mask
 E F G H
 Logits Logits Logits Logits
 C1 C2 C3 C4
-Parallel Block  
+Parallel Block
 A B C
 D
 1 Target Model
