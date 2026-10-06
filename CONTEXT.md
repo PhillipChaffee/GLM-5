@@ -57,6 +57,14 @@ Chooses each request's verification length to maximize expected system-wide thro
 **KV injection**:
 Feeding target-model hidden states into the drafter's attention as extra context, so the drafter conditions on the target's computation.
 
+## DFlash family
+
+**DFlash**:
+A pure parallel drafter (Chen et al., ICML 2026): predicts all γ candidate tokens in one forward pass, each position conditioned only on the verified context, not on sibling positions. The backbone DSpark's parallel stage builds on; the suffix-decay-prone baseline.
+
+**DFlash2**:
+Inco AI's second-generation parallel drafter: DFlash's one-pass design plus a path selector (traces one coherent path through each position's top-K candidates) and two-tap dynamic convolutions (local predecessor mixing that curbs suffix decay). No confidence head or scheduler. The GLM-5.3-Flash DFlash2 checkpoint is this effort's zero-training baseline.
+
 ## GLM-side baseline
 
 **MTP**:
