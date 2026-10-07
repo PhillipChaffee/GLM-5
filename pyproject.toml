@@ -20,7 +20,7 @@ dependencies = ["pypdf>=6.19.0"]
 # experiments/proxy-run/dspark_proxy.py), not a PyPI package, so deptry
 # carries the documented exception instead.
 [project.optional-dependencies]
-experiments = ["torch", "modal", "datasets", "huggingface_hub"]
+experiments = ["torch", "modal", "datasets", "huggingface_hub", "transformers"]
 
 [tool.ruff]
 line-length = 100                   # 88 is ruff's default; 100 is a deliberate widening — the formatter wraps code to it and E501 flags what wrapping cannot touch (long strings, comments)
@@ -117,6 +117,12 @@ convention = "google"
     "PLC0415",
 ]
 
+"experiments/dflash2-smoke/dflash2_smoke.py" = [
+    # Same reason as dspark_proxy.py above: `modal run` parses this file in
+    # the local environment, where huggingface_hub is not installed.
+    "PLC0415",
+]
+
 [tool.complexipy]
 # The cognitive-complexity gate (complexipy 8.0.1, the pin in
 # requirements-lock.txt): any function scoring above max-complexity-allowed
@@ -151,8 +157,8 @@ python_version = "3.12"
 
 [[tool.mypy.overrides]]
 # The experiments/ research stack is not installed in the gate environment:
-# torch/modal/datasets/huggingface_hub are heavy runtime wheels kept out of
-# the shipped lockfile (they are declared in
+# torch/modal/datasets/huggingface_hub/transformers are heavy runtime wheels
+# kept out of the shipped lockfile (they are declared in
 # [project.optional-dependencies].experiments so deptry sees them), and
 # deepspec is vendored into the Modal image at build time. Their imports
 # resolve to Any here; the code that uses them is still fully annotated and
@@ -162,6 +168,7 @@ module = [
     "modal", "modal.*",
     "datasets", "datasets.*",
     "huggingface_hub", "huggingface_hub.*",
+    "transformers", "transformers.*",
     "deepspec", "deepspec.*",
 ]
 ignore_missing_imports = true
@@ -176,7 +183,7 @@ ignore_missing_imports = true
 # mypy derives top-level names; if __init__.py files ever appear, these
 # stop matching and the rule fails loudly again — the desired
 # fail-closed direction.
-module = ["dspark_proxy", "timed_eval", "make_split"]
+module = ["dspark_proxy", "timed_eval", "make_split", "dflash2_smoke"]
 disallow_untyped_decorators = false
 
 [tool.pytest.ini_options]

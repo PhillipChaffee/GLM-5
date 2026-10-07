@@ -1,0 +1,96 @@
+{
+  "arm": "mtp",
+  "tag": "mtp",
+  "sglang_image": "lmsysorg/sglang:v0.5.21",
+  "sglang_tag_sha": "e00930c5489053f26d86b179cee0d087f846acbb",
+  "dflash_capture_pr": 36708,
+  "gpu": "B200+:4",
+  "gpu_names": [
+    "NVIDIA B300 SXM6 AC",
+    "NVIDIA B300 SXM6 AC",
+    "NVIDIA B300 SXM6 AC",
+    "NVIDIA B300 SXM6 AC"
+  ],
+  "tp_size": 4,
+  "boot_wall_s": 746.5790436267853,
+  "boot_info": {
+    "speculative_algorithm": "EAGLE",
+    "speculative_draft_model_path": null,
+    "speculative_dflash_block_size": null,
+    "speculative_num_draft_tokens": 6,
+    "speculative_num_steps": 5,
+    "speculative_eagle_topk": 1,
+    "speculative_draft_attention_backend": null,
+    "speculative_dsa_topk_backend": "sgl-kernel",
+    "attention_backend": "dsa",
+    "dsa_prefill_backend": "trtllm",
+    "dsa_decode_backend": "trtllm",
+    "kv_cache_dtype": "fp8_e4m3",
+    "moe_runner_backend": "flashinfer_trtllm",
+    "tp_size": 4,
+    "mem_fraction_static": 0.85785,
+    "max_running_requests": 48,
+    "chunked_prefill_size": 16384
+  },
+  "suite": {
+    "rows": [
+      {
+        "window": "suite:mt-bench",
+        "concurrency": 1,
+        "temperature": 1.0,
+        "n": 80,
+        "wall_s": 146.84136319160461,
+        "tokens": 29047,
+        "aggregate_tok_s": 197.81211076131382,
+        "per_user_tok_s_mean": 234.55247178708532,
+        "p50_latency_s": 1.3597421646118164,
+        "rounds_counter_delta": 10278.0,
+        "tau_counter": 2.826133489005643
+      },
+      {
+        "window": "suite:alpaca",
+        "concurrency": 1,
+        "temperature": 1.0,
+        "n": 80,
+        "wall_s": 89.50746893882751,
+        "tokens": 24004,
+        "aggregate_tok_s": 268.1787373119126,
+        "per_user_tok_s_mean": 238.80777724175633,
+        "p50_latency_s": 0.9006705284118652,
+        "rounds_counter_delta": 7946.0,
+        "tau_counter": 3.0208910143468413
+      }
+    ]
+  },
+  "ladder": {
+    "rows": [
+      {
+        "window": "ladder:c1",
+        "concurrency": 1,
+        "temperature": 0.0,
+        "n": 256,
+        "wall_s": 186.2800896167755,
+        "tokens": 45455,
+        "aggregate_tok_s": 244.0142695524371,
+        "per_user_tok_s_mean": 229.37013808960663,
+        "p50_latency_s": 0.7766342163085938,
+        "rounds_counter_delta": 15014.0,
+        "tau_counter": 3.0275076595177834
+      },
+      {
+        "window": "ladder:c16",
+        "concurrency": 16,
+        "temperature": 0.0,
+        "n": 256,
+        "wall_s": 82.19200301170349,
+        "tokens": 45495,
+        "aggregate_tok_s": 553.5210036616563,
+        "per_user_tok_s_mean": 46.2118347417441,
+        "p50_latency_s": 4.272280693054199,
+        "rounds_counter_delta": 15118.0,
+        "tau_counter": 3.009326630506681
+      }
+    ]
+  },
+  "total_wall_s": 1259.6759107112885
+}

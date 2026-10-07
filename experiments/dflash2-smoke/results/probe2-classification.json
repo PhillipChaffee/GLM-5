@@ -1,0 +1,51 @@
+{
+  "purpose": "rerun of the 4 reproduced divergence prompts to separate tie-flip noise from verifier bugs",
+  "reference_self_reproducible": true,
+  "dflash_self_reproducible": false,
+  "rows": [
+    {
+      "id": "t00-emoji",
+      "probe1_divergence_pos": 6,
+      "probe2_divergence_pos": 6,
+      "ref_top1": " typically",
+      "ref_top2": " representing",
+      "ref_gap": 0.25,
+      "spec2_token": " indicating",
+      "spec2_rank_in_ref": 3,
+      "probe1_spec_rank_in_ref": 1
+    },
+    {
+      "id": "t00-safety",
+      "probe1_divergence_pos": 37,
+      "probe2_divergence_pos": 66,
+      "ref_top1": "1",
+      "ref_top2": "**",
+      "ref_gap": 0.0,
+      "spec2_token": "**",
+      "spec2_rank_in_ref": 1,
+      "probe1_spec_rank_in_ref": 1
+    },
+    {
+      "id": "t00-garbled",
+      "probe1_divergence_pos": 18,
+      "probe2_divergence_pos": 18,
+      "ref_top1": " someone",
+      "ref_top2": " a",
+      "ref_gap": 0.0,
+      "spec2_token": " someone",
+      "spec2_rank_in_ref": 0,
+      "probe1_spec_rank_in_ref": 0
+    },
+    {
+      "id": "t00-injection",
+      "probe1_divergence_pos": 12,
+      "probe2_divergence_pos": null,
+      "ref_top1": null,
+      "ref_top2": null,
+      "ref_gap": null,
+      "spec2_token": null,
+      "spec2_rank_in_ref": null,
+      "probe1_spec_rank_in_ref": 1
+    }
+  ]
+}

@@ -16,6 +16,23 @@ The DSpark-for-GLM-5.3-Flash wayfinder map is [issue #1](https://github.com/Phil
 
 ## Agent skills
 
+### Modal runs
+
+Run long Modal GPU stages detached, from a backgrounded process with a log file:
+`nohup uvx modal run --detach experiments/<app>.py --stage <stage> ... > <log> 2>&1 &`,
+then tail the log. An ephemeral `modal run` stops its app when the entrypoint
+completes, which silently kills any `.spawn()`ed call (0 containers, no result,
+no logs); `.remote()` under `--detach` streams logs and survives a dead local
+process. Poll progress with the app's result-peek stage — an empty
+`modal container list` can also mean an image build is still running. Quick CPU
+stages (inspect, fetch) are fine as plain blocking `modal run`. Blackwell GPU
+scarcity is real (2026-10-06: B200 unschedulable for hours): prefer the
+`B200+:N` spec, which falls back to B300 at B200 rates, and record the
+hardware each run actually got. Probe a fresh run with short sleeps (30-60 s)
+until it shows first life — a container in `modal container list`, a log line,
+or a committed result — and only then lengthen the cadence: a long first sleep
+burns wall time on a dead or misconfigured run.
+
 ### Issue tracker
 
 GitHub Issues on PhillipChaffee/GLM-5 via the `gh` CLI. See `docs/agents/issue-tracker.md`.
