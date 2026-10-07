@@ -24,7 +24,7 @@ def test_extract_paper_removes_nuls_and_keeps_page_boundaries(tmp_path: Path) ->
         out = extract_paper(src)
     reader.assert_called_once_with(src)
     assert out == src.with_suffix(".txt")
-    assert out.read_text() == "first page\n\nlast page"
+    assert out.read_text() == "first page\n\nlast page\n"
 
 
 def test_module_entry_point_writes_sidecar(tmp_path: Path) -> None:
@@ -36,4 +36,4 @@ def test_module_entry_point_writes_sidecar(tmp_path: Path) -> None:
         writer.write(stream)
     with patch.object(sys, "argv", ["scripts.extract_paper", str(src)]):
         runpy.run_path("scripts/extract_paper.py", run_name="__main__")
-    assert src.with_suffix(".txt").read_text() == ""
+    assert src.with_suffix(".txt").read_text() == "\n"

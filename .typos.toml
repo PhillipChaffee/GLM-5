@@ -4,7 +4,15 @@
 [files]
 # PDF-derived paper sidecars contain broken line wraps and authors' names;
 # they are reference material, not source or documentation we maintain.
-extend-exclude = ["papers/*.txt"]
+extend-exclude = [
+    "papers/*.txt",
+    # Verbatim upstream benchmark/dataset text (HumanEval, MBPP, Alpaca carry
+    # the datasets' own typos); editing them would corrupt the eval prompts.
+    "experiments/dflash2-smoke/data/*.jsonl",
+    # Captured model outputs and top-logprob token keys: measurement
+    # evidence, not maintained prose.
+    "experiments/dflash2-smoke/results/*.json",
+]
 
 [default.extend-identifiers]
 # ruff's copyright rule family, not the word "copy"
@@ -12,3 +20,8 @@ CPY001 = "CPY001"
 # SGLang's parallel-draft model family (docs/research/glm-flash-engines.md);
 # not a misspelling of "part"
 pard = "pard"
+
+[default.extend-words]
+# The CC BY-NC-ND license token (docs/research/dflash2-blog.md,
+# experiments/dflash2-smoke/README.md); not the word "and"
+ND = "ND"

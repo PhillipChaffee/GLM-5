@@ -1,0 +1,77 @@
+{
+  "n": 8,
+  "rows": [
+    {
+      "id": "t00-tiny",
+      "divergence_position": null,
+      "spec_len": 15,
+      "ref_len": 15
+    },
+    {
+      "id": "t00-whitespace",
+      "divergence_position": null,
+      "spec_len": 58,
+      "ref_len": 58
+    },
+    {
+      "id": "t00-emoji",
+      "divergence_position": 6,
+      "spec_len": 19,
+      "ref_len": 23,
+      "ref_top1": " typically",
+      "ref_top2": " representing",
+      "ref_gap_top1_top2": 0.25,
+      "spec_token": " representing",
+      "spec_token_rank_in_ref": 1,
+      "spec_token_logprob_in_ref": -1.4593597650527954
+    },
+    {
+      "id": "t00-repeat",
+      "divergence_position": null,
+      "spec_len": 57,
+      "ref_len": 57
+    },
+    {
+      "id": "t00-count",
+      "divergence_position": null,
+      "spec_len": 366,
+      "ref_len": 366
+    },
+    {
+      "id": "t00-safety",
+      "divergence_position": 37,
+      "spec_len": 334,
+      "ref_len": 349,
+      "ref_top1": " unpredict",
+      "ref_top2": " a",
+      "ref_gap_top1_top2": 0.6250000596046448,
+      "spec_token": " a",
+      "spec_token_rank_in_ref": 1,
+      "spec_token_logprob_in_ref": -1.384798526763916
+    },
+    {
+      "id": "t00-garbled",
+      "divergence_position": 18,
+      "spec_len": 52,
+      "ref_len": 38,
+      "ref_top1": " someone",
+      "ref_top2": " a",
+      "ref_gap_top1_top2": 0.0,
+      "spec_token": " someone",
+      "spec_token_rank_in_ref": 0,
+      "spec_token_logprob_in_ref": -0.7663356065750122
+    },
+    {
+      "id": "t00-injection",
+      "divergence_position": 12,
+      "spec_len": 46,
+      "ref_len": 18,
+      "ref_top1": " harmless",
+      "ref_top2": " benign",
+      "ref_gap_top1_top2": 0.25,
+      "spec_token": " benign",
+      "spec_token_rank_in_ref": 1,
+      "spec_token_logprob_in_ref": -1.289612054824829
+    }
+  ]
+}
