@@ -222,26 +222,37 @@ def cache(local_batch_size: int = 16) -> None:
     },
 )
 def train(
-    exp_name: str = "dspark_block7_qwen3_4b", epochs: int = 10, local_batch_size: int = 4
+    exp_name: str = "dspark_block7_qwen3_4b",
+    epochs: int = 10,
+    local_batch_size: int = 4,
+    head_type: str = "vanilla",
+    max_steps: int = 0,
 ) -> None:
-    """Train the block-7 DSpark drafter with DeepSpec on the cached states."""
-    _run(
-        [
-            "python",
-            "train.py",
-            "--config",
-            "config/dspark/dspark_qwen3_4b.py",
-            "--opts",
-            f"exp_name={exp_name}",
-            "--opts",
-            f"train.num_train_epochs={epochs}",
-            "--opts",
-            f"train.local_batch_size={local_batch_size}",
-            "--opts",
-            "data.target_cache_path=/vol/cache",
-        ],
-        cwd=DEEPSPEC_DIR,
-    )
+    """Train the block-7 DSpark drafter with DeepSpec on the cached states.
+
+    head_type selects the sequential head (vanilla/gated/rnn) via the
+    config-only override model.markov_head_type. max_steps truncates training
+    after that many optimizer steps (0 = no override; smoke runs use it).
+    """
+    cmd = [
+        "python",
+        "train.py",
+        "--config",
+        "config/dspark/dspark_qwen3_4b.py",
+        "--opts",
+        f"exp_name={exp_name}",
+        "--opts",
+        f"train.num_train_epochs={epochs}",
+        "--opts",
+        f"train.local_batch_size={local_batch_size}",
+        "--opts",
+        f"model.markov_head_type={head_type}",
+        "--opts",
+        "data.target_cache_path=/vol/cache",
+    ]
+    if max_steps:
+        cmd.extend(["--opts", f"train.max_train_steps={max_steps}"])
+    _run(cmd, cwd=DEEPSPEC_DIR)
     volume.commit()
 
 
@@ -256,12 +267,16 @@ def train_smoke(
     exp_name: str = "dspark_block7_qwen3_4b_smoke",
     epochs: int = 2,
     local_batch_size: int = 2,
+    head_type: str = "vanilla",
+    max_steps: int = 0,
 ) -> None:
     """Run a short local training pass to smoke-test the pipeline."""
     train.local(
         exp_name=exp_name,
         epochs=epochs,
         local_batch_size=local_batch_size,
+        head_type=head_type,
+        max_steps=max_steps,
     )
 
 
@@ -361,6 +376,51 @@ def fetch_result(name: str) -> bytes:
     return (Path(VOL) / "results" / f"{name}.json").read_bytes()
 
 
+HF_ASSET_REPO = "phillipchaffee/dspark-proxy-run"
+RESTORE_PATTERNS = ("cache/", "checkpoints/")
+
+
+@app.function(
+    image=util_image,
+    volumes={VOL: volume},
+    timeout=4 * 3600,
+    cpu=8,
+    memory=32768,
+    secrets=[hf_secret],
+)
+def restore_hf(repo_id: str = HF_ASSET_REPO) -> None:
+    """Restore cache shards and the baseline checkpoint from the HF dataset repo.
+
+    Downloads with a small worker pool (3) and commits after each file: a
+    crashed run resumes where it stopped, and the gentle concurrency avoids
+    the parallel-xet contention that killed the first attempt (14 streams,
+    container heartbeat deadlines). Commits run on the main thread only.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from huggingface_hub import HfApi, hf_hub_download
+
+    t0 = time.time()
+    api = HfApi()
+    files = [
+        name
+        for name in api.list_repo_files(repo_id, repo_type="dataset")
+        if name.startswith(RESTORE_PATTERNS)
+    ]
+
+    def fetch(name: str) -> str:
+        hf_hub_download(repo_id=repo_id, repo_type="dataset", filename=name, local_dir=VOL)
+        return name
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = [pool.submit(fetch, name) for name in files]
+        for idx, future in enumerate(as_completed(futures), 1):
+            name = future.result()
+            volume.commit()
+            _log(f"[{idx}/{len(files)}] {name} done in {(time.time() - t0) / 60:.1f} min")
+    _log(f"restore from {repo_id} done in {(time.time() - t0) / 60:.1f} min")
+
+
 @app.function(
     image=util_image,
     volumes={VOL: volume},
@@ -412,6 +472,8 @@ def main(
     exp_name: str = "dspark_block7_qwen3_4b",
     epochs: int = 10,
     local_batch_size: int = 4,
+    head_type: str = "vanilla",
+    max_steps: int = 0,
     draft: str = RELEASED_DRAFT,
     tag: str = "eval",
     tasks: str = DEFAULT_TASKS,
@@ -428,11 +490,23 @@ def main(
         "cache": (cache, {}),
         "train": (
             train,
-            {"exp_name": exp_name, "epochs": epochs, "local_batch_size": local_batch_size},
+            {
+                "exp_name": exp_name,
+                "epochs": epochs,
+                "local_batch_size": local_batch_size,
+                "head_type": head_type,
+                "max_steps": max_steps,
+            },
         ),
         "train-smoke": (
             train_smoke,
-            {"exp_name": exp_name, "epochs": epochs, "local_batch_size": local_batch_size},
+            {
+                "exp_name": exp_name,
+                "epochs": epochs,
+                "local_batch_size": local_batch_size,
+                "head_type": head_type,
+                "max_steps": max_steps,
+            },
         ),
         "eval": (
             evaluate,
@@ -457,6 +531,7 @@ def main(
             },
         ),
         "inspect": (inspect, {}),
+        "restore-hf": (restore_hf, {"repo_id": repo_id} if repo_id else {}),
         "push-hf": (push_to_hf, {"repo_id": repo_id}),
     }
     fn, kwargs = dispatch[stage]
