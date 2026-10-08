@@ -29,8 +29,16 @@ The token the target generates itself after accepting a draft prefix.
 DeepSeek-AI's speculative decoding framework: a semi-autoregressive drafter plus confidence-scheduled verification, deployed in DeepSeek-V4 serving (arXiv:2607.05147).
 _Avoid_: DeSpark
 
+**Block-mirror drafter**:
+A drafter architecture that clones the target model's own blocks — same hidden size, expert count, attention style, mHC — instead of independent dense drafter layers. The pattern DeepSeek's production DSpark drafter, Mistral's EAGLE drafters, and GLM's MTP layer all follow.
+_Avoid_: mirror drafter
+
 **DeepSpec**:
 DeepSeek-AI's open-sourced training repository for speculative decoding algorithms (Eagle3, DFlash, DSpark), with released drafter checkpoints.
+
+**Mask token**:
+The reserved vocabulary id standing in for each of the γ draft slots: the drafter's stream is the anchor embedding plus γ mask-token embeddings, and each mask position predicts the token that belongs in its slot. DeepSeek's production bundle calls it the noise token.
+_Avoid_: noise token
 
 **Parallel drafter**:
 A drafter producing all γ candidate tokens in a single forward pass; drafting latency is independent of block size, but positions predict independently.
