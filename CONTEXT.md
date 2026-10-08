@@ -65,6 +65,13 @@ Chooses each request's verification length to maximize expected system-wide thro
 **KV injection**:
 Feeding target-model hidden states into the drafter's attention as extra context, so the drafter conditions on the target's computation.
 
+**Target hidden-state cache**:
+The disk cache DeepSpec builds from one teacher forward pass over the regenerated corpus: per full sequence, the captured layers' hidden states plus the final pre-LM-head stream (the extra stream lets the trainer recompute target logits locally through the frozen LM head), all bf16. Training re-reads it once per epoch; runs sharing the layer set share the cache.
+
+**Streamed hidden states**:
+TorchSpec's alternative to the cache: the teacher engine captures hidden states as it runs and transfers them through Mooncake (a bounded staging store, not a cache) straight to the trainer, so the teacher forward pass re-runs once per epoch and never materializes on disk.
+_Avoid_: live hidden states, online distillation
+
 ## DFlash family
 
 **DFlash**:

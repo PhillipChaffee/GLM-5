@@ -20,6 +20,9 @@ CPY001 = "CPY001"
 # SGLang's parallel-draft model family (docs/research/glm-flash-engines.md);
 # not a misspelling of "part"
 pard = "pard"
+# Modal's container-to-container private-networking address family
+# (docs/research/hidden-state-cache-vs-streaming.md); a proper name, not "pn"
+i6pn = "i6pn"
 
 [default.extend-words]
 # The CC BY-NC-ND license token (docs/research/dflash2-blog.md,
