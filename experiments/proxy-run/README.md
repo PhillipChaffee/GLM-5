@@ -85,6 +85,67 @@ orchestrated by `dspark_proxy.py` (Modal app `dspark-proxy-run`, Volume `dspark-
 - confidence calibration: ours ECE 0.005-0.008, AUC 0.91-0.95 (well-calibrated at low
   absolute survival); released ECE 0.06-0.13, overconfident.
 
+## Sequential-head A/B (#14): RNN head vs vanilla Markov
+
+Same data, cache, epochs, global batch (512), and eval protocol as the full vanilla
+run — the sequential head is the only variable (`--opts model.markov_head_type=rnn`
+in the `train` stage; DeepSpec builds `RNNHead` from that config key). Micro-batch 2
+matches the vanilla full run (batch 4 OOMs for either head — the full-vocab fp32 loss
+intermediate, not an RNN-specific cost). RNN adds one `joint_proj` (2r+d)x3r, r=256,
+d=2560 and carries recurrent state across the 7 positions of a block.
+
+- restore-hf (new stage): cache + checkpoint back from `phillipchaffee/dspark-proxy-run`,
+  611 GB in 60.8 min at 3-way concurrency (~$1). Sequential single-stream took 13.8
+  min/shard; 14 parallel streams killed the container's heartbeat twice. Resume works:
+  `snapshot_download`-style per-file skip + per-file `volume.commit()`.
+- smoke train: 5 optimizer steps (new `max_steps` knob), RNN head builds from the
+  config override, checkpoint saves (`..._rnn_smoke/step_5`), ~14 min incl. compile.
+- smoke eval (gsm8k:12): evaluator loads the RNN drafter from the checkpoint's saved
+  config (`markov_head_type: "rnn"` in `config.json`) — drafting, verification, and
+  confidence recording all run; tau 1.01 (untrained floor, as expected).
+- full train (4xH100): **380/380 steps in 117.8 min (~$19), loss 2.62 -> 1.84** (vanilla
+  full run: 133.6 min, loss 1.79). Checkpoint: `home/checkpoints/deepspec/
+  dspark_block7_qwen3_4b_rnn/step_380` (on the Volume; reproducible config-only).
+- full eval (8xH100, identical harness to full_ours): ~40 min (~$13).
+
+Results (`results/ab_rnn.json` vs `results/full_ours.json`; released drafter from
+`match_released_t00.json` for the tail comparison):
+
+| task | tau vanilla | tau rnn | delta | |
+|---|---|---|---|---|
+| gsm8k | 2.468 | 2.434 | -0.034 | (-1.4%) |
+| math500 | 2.329 | 2.294 | -0.035 | (-1.5%) |
+| humaneval | 1.771 | 1.748 | -0.023 | (-1.3%) |
+| mbpp | 1.850 | 1.823 | -0.026 | (-1.4%) |
+| mt-bench | 1.531 | 1.526 | -0.005 | (-0.3%) |
+| alpaca | 1.493 | 1.482 | -0.011 | (-0.7%) |
+| mean | | | **-0.022** | |
+
+Verdict against ticket #14's decision-relevant reads:
+
+1. **tau delta vs eval noise (~0.1)**: every task delta is -0.005..-0.035, mean -0.022
+   — uniformly slightly negative but well inside the noise bar. Vanilla stays the
+   default; the novel-head bar stays high.
+2. **Position-wise curves**: the RNN head does NOT lift the tail. Position 1 is
+   identical (same backbone); positions 2-7 track vanilla down to slightly steeper
+   (gsm8k pos2 0.364 -> 0.358, pos4 0.137 -> 0.131). The ours-vs-released tail gap
+   (pos4-7 mass share: released 2.80x pos1 on gsm8k vs ours 0.53/0.49) is a **data-scale
+   artifact** (1.3M vs 20k samples), not a head-architecture gap — at matched data the
+   richer conditioner buys nothing.
+3. **Confidence calibration**: AUC marginally better for RNN (+0.01-0.02 on several
+   positions), ECE mixed (worse at pos1 on math-heavy tasks, better at some tails) —
+   no decisive win.
+
+Throughput is not decision-grade across these two runs: the pre-fix harness JSONs
+carry aggregate fields only (per-stream = aggregate/8 per the gotcha above), and the
+runs sat on different days/machines — per-stream tok/s moved vanilla ~51.9 -> rnn ~63.3
+on gsm8k, which is machine-level variance, not a head effect. Serving-side throughput
+belongs to the #25 campaign anyway.
+
+Cost of the A/B: restore ~$1, smokes ~$3, failed batch-4 train attempt ~$2, full train
+~$19, full eval ~$13 — **~$38 all-in**. Cache deleted again post-run (restorable from
+HF in ~35 min); `home/checkpoints` keeps both step_380 drafters (~6 GB, <$1/mo).
+
 ## Cost and wall-clock (measured)
 
 | Stage | Hardware | Wall | Cost |
