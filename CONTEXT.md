@@ -72,6 +72,34 @@ The disk cache DeepSpec builds from one teacher forward pass over the regenerate
 TorchSpec's alternative to the cache: the teacher engine captures hidden states as it runs and transfers them through Mooncake (a bounded staging store, not a cache) straight to the trainer, so the teacher forward pass re-runs once per epoch and never materializes on disk.
 _Avoid_: live hidden states, online distillation
 
+## DeepSpec training pipeline
+
+**On-policy regeneration (regen)**:
+Serving the target to rewrite the training corpus's assistant turns in the target's own voice, so the drafter trains on data in-distribution for the exact model that will use it.
+_Avoid_: data regeneration, corpus rewriting
+
+**Context features**:
+The target hidden states at chosen layer depths that the drafter reads in place of tokens; the captured layer ids, their count, and the final state are the drafter's entire input.
+_Avoid_: hidden-state features, captured states
+
+**Context projector (fc)**:
+The drafter's first linear layer, projecting the concatenated context features into the drafter's hidden size; its input width is feature count × hidden size, so changing the captured set changes its shape and forces a retrain. Name is DeepSpec's.
+_Avoid_: input projection, main_proj
+
+**Post-final-norm state**:
+The target's final hidden state after the mHC fold and final RMSNorm — what "the last captured layer" resolves to under the GLM capture convention; sglang's glm5_next capture cannot produce it as shipped.
+_Avoid_: last hidden state, final-layer output
+
+## Costing
+
+**Utilization floor**:
+The throughput a smoke run produces at its default knobs (concurrency, micro-batch) — far below the design-target throughput cost estimates assume; extrapolating full-run cost from it gives the worst-case price.
+_Avoid_: smoke rate, measured throughput (unqualified)
+
+**Data-hunger curve**:
+The measured steepness of drafter quality against training-corpus scale (proxy run: τ 6.12 at 1.3M samples vs 2.47 at 20k), which makes corpus size the quality lever and subsetting the last cost lever.
+_Avoid_: scaling curve
+
 ## DFlash family
 
 **DFlash**:
