@@ -16,7 +16,7 @@ All sglang citations are against the pinned serving SHA `961bcf48` (image `lmsys
 ```python
 self.capture_aux_hidden_states = True
 self.model.dflash_capture = True
-# Capturing before layer k + 1 gives the completed output of layer k.
+# Capturing before layer k + 1 gives the completed output of layer k
 self.model.layers_to_capture = [val + 1 for val in layer_ids]
 ```
 
@@ -42,9 +42,7 @@ Where the final norm runs relative to capture: **after the entire layer loop**. 
 ```python
 hidden_states = residual_batch.complete_output(hidden_states, forward_batch)
 if not forward_batch.forward_mode.is_idle():
-    hidden_states = residual_batch.final_norm(
-        hidden_states, forward_batch, self.norm
-    )
+    hidden_states = residual_batch.final_norm(hidden_states, forward_batch, self.norm)
 ...
 return hidden_states, aux_hidden_states
 ```
@@ -56,7 +54,7 @@ return hidden_states, aux_hidden_states
 - For requested id `k < 44`: the value captured at input of layer `k+1` is the raw mHC stream state that layer `k`'s FFN exit handed on — the pre-norm residual-stream output of layer `k` — folded by `hc_contract` to `[B, S, D]`. This equals what the training cache stores for id `k` (mean-folded raw block output), which is why ids 1..43 serve bit-identically to training.
 - The mHC state machinery writes streams at the FFN exit and **contracts them only after the last layer** (`layers/layer_boundary/residual/mhc.py:222-231`: `if self.state.is_last_layer: hidden_states = hc_contract(hidden_states, self.state.hc_mult)`), so the value entering `self.norm` at `glm5_next.py:1204` is the **folded, pre-final-norm** last-layer state. `self.norm` then produces the post-final-norm state that feeds the LM head.
 
-### Is the post-final-norm state trivially available elsewhere? Yes.
+### Is the post-final-norm state trivially available elsewhere? Yes
 
 It is the **return value of the final-norm call** (`glm5_next.py:1204-1206`) on every non-idle forward — prefill and every verification step — and it is exactly what flows into the logits processor / LM head (`Glm5NextForConditionalGeneration.forward`, glm5_next.py:1619-1665). A capture of id 44 therefore needs ~3 lines after the `final_norm` call: if the final id is requested, `aux_hidden_states.capture(hidden_states)` (the post-norm tensor). Note the important subtlety verified below (Q5a): the existing `capture=` seam on `residual_batch.final_norm` (`layers/layer_boundary/residual/batch.py:59-114`) delivers the norm's **input**, not its output (`layers/layer_boundary/residual/access.py:40-54` — `capture(residual)` receives the updated residual; `RMSNorm.forward` returns `(normed, residual_new)` where `residual_new = x + residual`, `layers/layernorm.py:832-839, 867-870`).
 
@@ -98,6 +96,7 @@ Net: **every multi-layer feature-tap drafter shipped on sglang avoids the final 
 Identical failure class to ours: the last requested id is the final boundary, the `[val+1]` shift makes it unreachable, only K-1 features arrive, the drafter's projection crashes on shape. The fix: "Interpret GPT-OSS EAGLE3 layer IDs as hidden-state boundary indices. **Capture a requested final GPT-OSS boundary before the target model's final normalization.**" Note carefully: sglang's established final-boundary capture is **pre-norm**, and the gpt-oss drafter was trained (or at least served) against that. PR #32334 also had to honor the draft's `norm_before_fc: true` (normalize concatenated aux states before the FC), showing draft checkpoints differ in where they expect normalization.
 
 **Is the exclusion of the final layer deliberate or a boundary bug?** Both, in different places:
+
 - On glm5_next dflash it is an **accidental structural hole**: #36708 wanted "output of layer k" semantics (its own test names it "target-layer mapping"), and the `[val+1]` machinery simply cannot express "output of the last layer" because there is no layer 45. Nobody discussed the final layer in #36708; the shipped DFlash2 checkpoint sidesteps it.
 - On DeepSpec upstream it is **deliberate and documented**: `deepspec/eval/base_evaluator.py:100-112` (`assert_no_final_target_layer`, called from both the dspark and eagle3 evaluators):
 
@@ -169,6 +168,7 @@ From `deepseek-ai/DeepSpec` (GitHub, verified `config/dspark|dflash|eagle3/*.py`
 **The correct patch is simpler than the Kimi pattern**: after `residual_batch.final_norm(...)` returns (`glm5_next.py:1204-1206` @ `961bcf48`; 1225-1227 at main), the returned `hidden_states` *is* the post-final-norm state; if the requested max id equals `num_hidden_layers - 1`, append it via `aux_hidden_states.capture(hidden_states)` (~5 lines, plus keeping `set_dflash_layers_to_capture` from emitting the impossible `val+1` for that id). Capture order is preserved iff the final id is the **maximum** of `target_layer_ids` (it is, for the 7-union); a config that put 44 in the middle would need positional insertion.
 
 Risk surface, itemized:
+
 - **CUDA graphs**: the DFlash loop capture already runs inside decode graphs today; the post-norm capture sits in the same captured region after the loop, appending to the same accumulator. gpt_oss ships exactly this shape. Idle forwards skip `final_norm` (`glm5_next.py:1203`) — the guard `if not forward_batch.forward_mode.is_idle()` must wrap the capture (the DFLASH worker does not run idle forwards, but guard anyway).
 - **PP**: `final_norm` runs only on the last PP rank, and the setter already early-returns on non-last ranks — consistent.
 - **DeferredFinalize**: the `capture=` seam raises on a deferred MoE handoff (residual_batch.py:97-103), but glm5_next does not pass `takes_handoff=True`, so `stream.export` completes the handoff eagerly (residual_stream.py:211-232) — not reachable for this patch's placement (capture after the return, not via the seam).
@@ -190,6 +190,7 @@ All four arms are cache-compatible (the 7-union cache already stores per-layer f
 4. **6 = [1,12,23,34,42,43] (retrain, stock)** — needs retrain like (2)/(3) but keeps adjacent 42/43 without the 44 intent feature; strictly dominated by (2) unless a measurement shows 43 (but not 44) is uniquely valuable, for which there is no evidence anywhere.
 
 Genuinely unknown / measurable (cheap first):
+
 - **Offline, no GPU serving**: run entropy + pairwise-CKA analysis (arXiv:2610.12939) over the cached 7-union features to quantify 42/43/44 redundancy and 44's informativeness; parity-check `self.norm(folded_stream)` against the training cache's stored id-44 feature (catches the fused-rounding question and any pre/post-norm confusion before serving).
 - **Live smoke (single GPU-hour class)**: does the patched post-norm capture fire identically on prefill and under decode CUDA-graph replay (compare against the training cache on a fixed prompt)? Does the drafter's acceptance length move at all between 6-feature and 7-feature feeding (the step_20 checkpoint accepts only the 7-feature shape; a 6-feature run needs the retrained fc — or simply verify the 7-feature path first)?
 - **Unknown anywhere in the literature**: no published ablation isolates the final layer's marginal value for a parallel/multi-tap drafter. If the full run happens, the 5-spread vs 7-union comparison (config-only retrains on the same cache) would be the first such data point.
@@ -216,12 +217,13 @@ Genuinely unknown / measurable (cheap first):
 ## Sources
 
 Repo (read-only, masked reads):
+
 - `experiments/glm-drafter/deepspec_glm/deepspec/modeling/dspark/glm5/hidden_states.py` (worktree `23-glm-drafter-run`) — training capture convention
 - `experiments/glm-drafter/notes/dspark-compat-report.md` — the compatibility map being researched
 - `papers/DSpark-2607.05147.txt`, `papers/DFlash-2602.06036.txt`, `papers/DeepSeek-V4.1-Flash-2609.19969.txt`, `papers/GLM-5-technical-report-2602.15763.txt`
 
-sglang @ `961bcf48` (per-file raw fetches, saved in scratch) and main `166b4ae` (shallow clone `sglang-src/`):
-- sglang per-file fetches at `961bcf48` (saved to ephemeral scratch, since deleted) and a shallow clone of main — file references below carry line numbers per SHA:
+sglang sources: per-file raw fetches at `961bcf48` (saved to ephemeral scratch, since deleted) plus a shallow clone of main `166b4ae`; file references below carry line numbers per SHA.
+
 - `python/sglang/srt/models/glm5_next.py` (1040, 1099-1102, 1158-1187, 1199-1210, 1514-1538 @961bcf48; 1225-1227, 1547-1559 @main)
 - `python/sglang/srt/models/kimi_k3.py` (2674, 2809-2847, 2865-2919, 2989-3006 @961bcf48)
 - `python/sglang/srt/models/gpt_oss.py` @main (707-734, 1336-1363)
