@@ -51,7 +51,7 @@ add "file-length" "./effective-lines-gate.sh"
 
 add "spell-check" "typos"
 add "markdown-lint" 'markdownlint-cli2 "**/*.md"'
-add "link-check" "lychee --no-progress ."
+add "link-check" "lychee --no-progress --max-concurrency 4 --max-retries 5 --retry-wait-time 3 ."
 add "secret-scan" "gitleaks detect --no-git --redact"
 add "duplication" "jscpd"
 add "advisories" "osv-scanner scan --lockfile requirements-lock.txt && osv-scanner scan --no-resolve --lockfile requirements.txt"
