@@ -116,3 +116,12 @@ _Avoid_: MTP head, draft head
 
 **MTP-1**:
 The single-token-per-step native speculative baseline that DSpark replaced in DeepSeek-V4 serving; the natural baseline for this effort.
+
+## SSD (serving technique)
+
+**SSD**:
+Speculative Speculative Decoding (Kumar, Dao, May; ICLR 2026, arXiv:2603.03251): runs the drafter on a separate device in parallel with verification, pre-speculating candidate continuations for the most likely verification outcomes (accepted length + bonus token) so a cache hit returns the next draft instantly — drafting latency drops out of the critical path. Best at batch size 1 and greedy (1.58× over optimized SD, 4.68× over AR for Llama-70B/1B); degrades with batch size and temperature, where the fallback becomes a fast low-latency speculator above a critical batch size.
+_Avoid_: double speculation, async drafting (unqualified)
+
+**Saguaro**:
+The optimized SSD algorithm from the same paper: bonus-token prediction from the most likely draft logits (~90% accuracy), a geometric fan-out sampling scheme that trades speculation quality against outcome-prediction accuracy, and a batch-size-dependent fallback strategy. Implemented in a standalone research engine (github.com/tanishqkumar/ssd), not in SGLang or vLLM.
