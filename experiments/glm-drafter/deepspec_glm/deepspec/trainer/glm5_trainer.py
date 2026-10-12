@@ -3,58 +3,71 @@
 from __future__ import annotations
 
 import json
-import os
+from pathlib import Path
+from typing import TYPE_CHECKING
 
-from deepspec.modeling.dspark.glm5 import Glm5DsparkModel, build_draft_config
+from deepspec.modeling.dspark.glm5 import DraftModelArgs, Glm5DsparkModel, build_draft_config
 from deepspec.trainer.dspark_trainer import Qwen3DSparkTrainer
-from transformers import AutoConfig, AutoTokenizer
+from huggingface_hub import snapshot_download
+from safetensors import safe_open
+from transformers import (
+    AutoConfig,
+    AutoTokenizer,
+    PretrainedConfig,
+    PreTrainedModel,
+    PreTrainedTokenizerBase,
+)
+
+if TYPE_CHECKING:
+    import torch
 
 
 class _WeightHolder:
     """Minimal weight carrier matching the copy interface of nn modules."""
 
-    def __init__(self, weight) -> None:
+    def __init__(self, weight: torch.Tensor) -> None:
         self.weight = weight
 
 
-def _load_target_tensor(model_path: str, candidate_names: list[str]) -> dict:
+def _load_target_tensor(model_path: str, candidate_names: list[str]) -> dict[str, torch.Tensor]:
     """Read tensors from a sharded safetensors checkpoint without a full load."""
-    from safetensors import safe_open
-
-    index_path = os.path.join(model_path, "model.safetensors.index.json")
-    single_file = os.path.join(model_path, "model.safetensors")
+    root = Path(model_path)
+    index_path = root / "model.safetensors.index.json"
+    single_file = root / "model.safetensors"
     wanted: dict[str, str] = {}
-    if os.path.exists(index_path):
-        with open(index_path, encoding="utf-8") as handle:
-            index = json.load(handle)
+    if index_path.exists():
+        index = json.loads(index_path.read_text(encoding="utf-8"))
         weight_map = index["weight_map"]
         for name in candidate_names:
             if name in weight_map:
                 wanted[name] = weight_map[name]
-    elif os.path.exists(single_file):
+    elif single_file.exists():
         for name in candidate_names:
-            wanted[name] = os.path.basename(single_file)
-    assert wanted, (
-        f"None of {candidate_names} found in checkpoint {model_path}; "
-        f"index present: {os.path.exists(index_path)}"
-    )
-    tensors: dict[str, object] = {}
+            wanted[name] = single_file.name
+    if not wanted:
+        msg = (
+            f"None of {candidate_names} found in checkpoint {model_path}; "
+            f"index present: {index_path.exists()}"
+        )
+        raise ValueError(msg)
+    tensors: dict[str, torch.Tensor] = {}
     for name, shard in wanted.items():
-        with safe_open(os.path.join(model_path, shard), framework="pt") as handle:
+        with safe_open(str(root / shard), framework="pt") as handle:
             tensors[name] = handle.get_tensor(name)
     return tensors
 
 
-def resolve_target_io_tensors(target_model_or_path):
+def resolve_target_io_tensors(
+    target_model_or_path: str | PreTrainedModel,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Return (embed_tokens_weight, lm_head_weight) for a target checkpoint.
 
     The path form avoids loading the full multi-hundred-GB target into CPU
-    memory just to read two tensors.
+    memory just to read two tensors. A loaded model object is also accepted:
+    its embedding/output weights are returned directly.
     """
     if isinstance(target_model_or_path, str):
-        if not os.path.isdir(target_model_or_path):
-            from huggingface_hub import snapshot_download
-
+        if not Path(target_model_or_path).is_dir():
             target_model_or_path = snapshot_download(target_model_or_path)
         loaded = _load_target_tensor(
             target_model_or_path,
@@ -83,16 +96,18 @@ class Glm5DsparkTrainer(Qwen3DSparkTrainer):
     _build_draft_model.
     """
 
-    """DSpark trainer for GLM-5.3-Flash targets."""
-
-    def _build_draft_model(self, *, target_config, model_args):
+    def _build_draft_model(
+        self, *, target_config: PretrainedConfig, model_args: DraftModelArgs
+    ) -> Glm5DsparkModel:
+        """Build the GLM drafter from the target text config plus model args."""
         draft_config = build_draft_config(
             target_config=target_config,
             model_args=model_args,
         )
         return Glm5DsparkModel(draft_config)
 
-    def build_models(self):
+    def build_models(self) -> tuple[Glm5DsparkModel, PreTrainedTokenizerBase]:
+        """Build the GLM drafter with target embed/lm_head copied from the checkpoint."""
         model_args = self.args.model
         tokenizer = AutoTokenizer.from_pretrained(
             model_args.target_model_name_or_path,

@@ -10,16 +10,36 @@ axis per intermediate layer, and the model's own ``last_hidden_state``
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Protocol
+
 import torch
+
+_COLLAPSED_NDIM = 3  # [B, S, D]: already mean-folded
+_STREAM_NDIM = 4  # [B, S, N, D]: raw mHC streams
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+
+class _TextModel(Protocol):
+    """Structural view of the GLM text stack: the final RMSNorm is here."""
+
+    norm: Callable[[torch.Tensor], torch.Tensor]
+
+
+class _LanguageModelHost(Protocol):
+    """Structural view of the GLM VL wrapper exposing the text model."""
+
+    language_model: _TextModel
 
 
 def fold_streams(hidden_states: torch.Tensor) -> torch.Tensor:
     """Collapse an mHC stream tensor ``[B, S, N, D]`` to ``[B, S, D]``."""
-    if hidden_states.dim() == 3:
+    if hidden_states.dim() == _COLLAPSED_NDIM:
         return hidden_states
-    assert hidden_states.dim() == 4, (
-        f"Expected [B, S, N, D] hidden-state streams, got {tuple(hidden_states.shape)}"
-    )
+    if hidden_states.dim() != _STREAM_NDIM:
+        msg = f"Expected [B, S, N, D] hidden-state streams, got {tuple(hidden_states.shape)}"
+        raise ValueError(msg)
     return hidden_states.mean(dim=2)
 
 
@@ -43,13 +63,15 @@ def extract_glm_context_feature(
             parts.append(final_hidden_state)
             continue
         part = hidden_states[layer_id + 1]
-        if part.dim() == 4:
+        if part.dim() == _STREAM_NDIM:
             part = part.mean(dim=2)
         parts.append(part)
     return torch.cat(parts, dim=-1)
 
 
-def normalize_final_stream(target_model, folded_streams: torch.Tensor) -> torch.Tensor:
+def normalize_final_stream(
+    target_model: _LanguageModelHost, folded_streams: torch.Tensor
+) -> torch.Tensor:
     """Apply the target's final RMSNorm to a folded last-layer stream."""
     language_model = target_model.language_model
     return language_model.norm(folded_streams)
@@ -59,7 +81,7 @@ def glm_target_hidden_states_from_hooks(
     captured: dict[int, torch.Tensor],
     target_layer_ids: list[int],
     final_layer_id: int,
-    final_norm,
+    final_norm: Callable[[torch.Tensor], torch.Tensor],
 ) -> torch.Tensor:
     """Build the cache payload for one batch from per-layer hook captures.
 
@@ -70,7 +92,7 @@ def glm_target_hidden_states_from_hooks(
     parts = []
     for layer_id in target_layer_ids:
         tensor = captured[layer_id]
-        if tensor.dim() == 4:
+        if tensor.dim() == _STREAM_NDIM:
             tensor = tensor.mean(dim=2)
         if layer_id == final_layer_id:
             tensor = final_norm(tensor)
@@ -83,15 +105,16 @@ def assert_glm_hidden_shapes(
     num_layers: int,
 ) -> None:
     """Fail fast when the captured hidden-state tuple has an unexpected shape."""
-    assert len(hidden_states) == num_layers + 1, (
-        f"Expected {num_layers + 1} hidden-state entries, got {len(hidden_states)}"
-    )
+    if len(hidden_states) != num_layers + 1:
+        msg = f"Expected {num_layers + 1} hidden-state entries, got {len(hidden_states)}"
+        raise ValueError(msg)
     stream_entry = hidden_states[1]
-    if stream_entry.dim() != 4:
-        raise AssertionError(
+    if stream_entry.dim() != _STREAM_NDIM:
+        msg = (
             "GLM-5.3-Flash hidden states must carry the mHC stream dimension; "
             f"got ndim={stream_entry.dim()} shape={tuple(stream_entry.shape)}"
         )
+        raise ValueError(msg)
 
 
 __all__ = [

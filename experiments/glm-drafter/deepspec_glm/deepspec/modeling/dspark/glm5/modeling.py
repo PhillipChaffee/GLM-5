@@ -8,6 +8,8 @@ hidden states (see deepspec_glm.modeling.dspark.glm5.hidden_states).
 
 from __future__ import annotations
 
+from typing import cast
+
 import torch
 from deepspec.modeling.dspark.common import (
     AcceptRatePredictor,
@@ -27,6 +29,8 @@ from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_utils import PreTrainedModel
 from transformers.models.glm5_next.modeling_glm5_next import Glm5NextRMSNorm
 
+_BASE_LOGITS_NDIM = 2  # sample_draft_token_step contract: [batch, vocab]
+
 
 class Glm5DsparkConfig(PretrainedConfig):
     """Config for the GLM-5.3-Flash DSpark drafter."""
@@ -35,6 +39,7 @@ class Glm5DsparkConfig(PretrainedConfig):
 
     def __init__(
         self,
+        *,
         vocab_size: int = 154880,
         hidden_size: int = 4096,
         intermediate_size: int = 10240,
@@ -53,8 +58,9 @@ class Glm5DsparkConfig(PretrainedConfig):
         markov_head_type: str = "vanilla",
         enable_confidence_head: bool = True,
         confidence_head_with_markov: bool = True,
-        **kwargs,
+        **kwargs: object,
     ) -> None:
+        """Initialize the GLM drafter config; HF kwargs pass to PretrainedConfig."""
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
@@ -83,7 +89,8 @@ class Glm5DsparkAttention(nn.Module):
     positions; the context key/values come from the captured target layers.
     """
 
-    def __init__(self, config, layer_idx: int) -> None:
+    def __init__(self, config: Glm5DsparkConfig, layer_idx: int) -> None:
+        """Build one NoPE drafter attention layer."""
         super().__init__()
         del layer_idx
         self.config = config
@@ -144,9 +151,9 @@ class Glm5DsparkAttention(nn.Module):
             k = k.repeat_interleave(self.num_key_value_groups, dim=1)
             v = v.repeat_interleave(self.num_key_value_groups, dim=1)
         if isinstance(attention_mask, BlockMask):
-            assert self.attention_dropout == 0.0, (
-                "flex_attention path does not apply attention_dropout"
-            )
+            if self.attention_dropout != 0.0:
+                msg = "flex_attention path does not apply attention_dropout"
+                raise ValueError(msg)
             attn_output = flex_attention(
                 q,
                 k,
@@ -170,7 +177,8 @@ class Glm5DsparkAttention(nn.Module):
 
 
 class Glm5DsparkDecoderLayer(nn.Module):
-    def __init__(self, config, layer_idx: int) -> None:
+    def __init__(self, config: Glm5DsparkConfig, layer_idx: int) -> None:
+        """Build one drafter decoder layer (attention + MLP, pre/post norms)."""
         super().__init__()
         del layer_idx
         self.hidden_size = config.hidden_size
@@ -200,7 +208,8 @@ class Glm5DsparkDecoderLayer(nn.Module):
 
 
 class Glm5DsparkMLP(nn.Module):
-    def __init__(self, config) -> None:
+    def __init__(self, config: Glm5DsparkConfig) -> None:
+        """Build the SwiGLU MLP block."""
         super().__init__()
         self.gate_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
         self.up_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
@@ -221,7 +230,8 @@ class Glm5DsparkModel(PreTrainedModel):
     _supports_sdpa = True
     _supports_flex_attn = True
 
-    def __init__(self, config) -> None:
+    def __init__(self, config: Glm5DsparkConfig) -> None:
+        """Validate drafter config fields and build the GLM drafter modules."""
         super().__init__(config)
         required_fields = (
             "target_layer_ids",
@@ -231,16 +241,20 @@ class Glm5DsparkModel(PreTrainedModel):
             "markov_rank",
         )
         for field in required_fields:
-            assert hasattr(config, field), f"config.{field} must be provided."
-        if int(config.markov_rank) > 0:
-            assert hasattr(config, "markov_head_type"), (
-                "config.markov_head_type must be provided when markov_rank > 0."
-            )
-        if bool(config.enable_confidence_head):
-            assert hasattr(config, "confidence_head_with_markov"), (
+            if not hasattr(config, field):
+                msg = f"config.{field} must be provided."
+                raise ValueError(msg)
+        if int(config.markov_rank) > 0 and not hasattr(config, "markov_head_type"):
+            msg = "config.markov_head_type must be provided when markov_rank > 0."
+            raise ValueError(msg)
+        if bool(config.enable_confidence_head) and not hasattr(
+            config, "confidence_head_with_markov"
+        ):
+            msg = (
                 "config.confidence_head_with_markov must be provided when "
                 "enable_confidence_head is true."
             )
+            raise ValueError(msg)
         self.target_layer_ids = list(config.target_layer_ids)
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList(
@@ -265,8 +279,14 @@ class Glm5DsparkModel(PreTrainedModel):
         self.confidence_head_with_markov = bool(
             getattr(config, "confidence_head_with_markov", False)
         )
-        if self.enable_confidence_head and self.confidence_head_with_markov:
-            assert self.markov_head is not None
+        confidence_requires_markov = (
+            self.enable_confidence_head
+            and self.confidence_head_with_markov
+            and self.markov_head is None
+        )
+        if confidence_requires_markov:
+            msg = "confidence_head_with_markov requires a markov head."
+            raise ValueError(msg)
         self.confidence_head = None
         if self.enable_confidence_head:
             input_dim = int(config.hidden_size)
@@ -283,19 +303,38 @@ class Glm5DsparkModel(PreTrainedModel):
         lm_head: nn.Module,
         freeze: bool = True,
     ) -> None:
-        assert self.embed_tokens.weight.shape == embed_tokens.weight.shape
-        assert self.lm_head.weight.shape == lm_head.weight.shape
+        """Copy the target's embedding/LM-head weights in and optionally freeze."""
+        if self.embed_tokens.weight.shape != embed_tokens.weight.shape:
+            msg = (
+                "embed_tokens shape mismatch: "
+                f"{tuple(self.embed_tokens.weight.shape)} vs "
+                f"{tuple(embed_tokens.weight.shape)}"
+            )
+            raise ValueError(msg)
+        if self.lm_head.weight.shape != lm_head.weight.shape:
+            msg = (
+                "lm_head shape mismatch: "
+                f"{tuple(self.lm_head.weight.shape)} vs "
+                f"{tuple(lm_head.weight.shape)}"
+            )
+            raise ValueError(msg)
         with torch.no_grad():
             self.embed_tokens.weight.copy_(embed_tokens.weight.detach())
             self.lm_head.weight.copy_(lm_head.weight.detach())
         if freeze:
             self.set_embedding_head_trainable(False)
 
-    def set_embedding_head_trainable(self, trainable: bool) -> None:
+    def set_embedding_head_trainable(self, trainable: bool) -> None:  # noqa: FBT001
+        """Freeze or unfreeze the copied embedding and LM-head weights.
+
+        The boolean stays positional: upstream ``ckpt_manager`` resumes with a
+        positional call.
+        """
         self.embed_tokens.requires_grad_(trainable)
         self.lm_head.requires_grad_(trainable)
 
     def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """Project drafter hidden states to vocabulary logits."""
         return self.lm_head(hidden_states)
 
     def predict_confidence_step(
@@ -303,11 +342,13 @@ class Glm5DsparkModel(PreTrainedModel):
         hidden_states: torch.Tensor,
         prev_token_ids: torch.Tensor | None = None,
     ) -> torch.Tensor | None:
+        """Predict per-position acceptance confidence for the drafted block."""
         if self.confidence_head is None:
             return None
         if self.confidence_head_with_markov:
-            assert self.markov_head is not None
-            assert prev_token_ids is not None
+            if self.markov_head is None or prev_token_ids is None:
+                msg = "markov-conditioned confidence needs head and prev ids."
+                raise ValueError(msg)
             prev_embeddings = self.markov_head.get_prev_embeddings(prev_token_ids).to(
                 dtype=hidden_states.dtype
             )
@@ -323,6 +364,7 @@ class Glm5DsparkModel(PreTrainedModel):
         temperature: float = 0.0,
         hidden_states: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Sample a full draft block from base logits (markov-conditioned)."""
         batch_size = base_logits.shape[0]
         proposal_len = base_logits.shape[1]
         if proposal_len == 0:
@@ -335,11 +377,14 @@ class Glm5DsparkModel(PreTrainedModel):
             return empty_tokens, base_logits
         if self.markov_head is None:
             return sample_tokens(base_logits, temperature), base_logits
-        return self.markov_head.sample_block_tokens(
-            base_logits,
-            first_prev_token_ids=first_prev_token_ids,
-            hidden_states=hidden_states,
-            temperature=temperature,
+        return cast(
+            "tuple[torch.Tensor, torch.Tensor]",
+            self.markov_head.sample_block_tokens(
+                base_logits,
+                first_prev_token_ids=first_prev_token_ids,
+                hidden_states=hidden_states,
+                temperature=temperature,
+            ),
         )
 
     def sample_draft_token_step(
@@ -350,10 +395,13 @@ class Glm5DsparkModel(PreTrainedModel):
         temperature: float = 0.0,
         hidden_states: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        assert base_logits.ndim == 2, (
-            "sample_draft_token_step expects base_logits shaped [batch, vocab], "
-            f"got {tuple(base_logits.shape)}."
-        )
+        """Sample one draft step from ``[batch, vocab]`` base logits."""
+        if base_logits.ndim != _BASE_LOGITS_NDIM:
+            msg = (
+                "sample_draft_token_step expects base_logits shaped [batch, vocab], "
+                f"got {tuple(base_logits.shape)}."
+            )
+            raise ValueError(msg)
         if self.markov_head is None:
             step_logits = base_logits
         else:
@@ -374,12 +422,13 @@ class Glm5DsparkModel(PreTrainedModel):
         noise_embedding: torch.Tensor,
         target_hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None,
-        position_ids=None,
-        past_key_values=None,
+        position_ids: torch.Tensor | None = None,
+        past_key_values: object | None = None,
         use_cache: bool = False,
         is_causal: bool = False,
-        **kwargs,
+        **kwargs: object,
     ) -> torch.Tensor:
+        """Run the drafter backbone; HF carry-along args are ignored by design."""
         del position_ids, past_key_values, use_cache, is_causal, kwargs
         target_hidden_states = self.hidden_norm(self.fc(target_hidden_states))
         hidden_states = noise_embedding
@@ -398,6 +447,7 @@ class Glm5DsparkModel(PreTrainedModel):
         loss_mask: torch.Tensor,
         target_last_hidden_states: torch.Tensor | None = None,
     ) -> DSparkForwardOutput:
+        """Run the DSpark training forward over sampled anchor blocks."""
         bsz, seq_len = input_ids.shape
         device = input_ids.device
         anchor_positions, block_keep_mask = sample_anchor_positions(

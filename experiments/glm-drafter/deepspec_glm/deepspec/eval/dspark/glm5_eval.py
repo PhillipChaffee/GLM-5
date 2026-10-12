@@ -11,8 +11,11 @@ Differences from the Qwen3 evaluator:
 
 from __future__ import annotations
 
+import functools
+import random
 from datetime import timedelta
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, ClassVar, Protocol
 
 import torch
 import torch.distributed as dist
@@ -31,18 +34,33 @@ from deepspec.modeling.dspark.glm5 import (
     Glm5DsparkModel,
     extract_glm_context_feature,
 )
-from transformers import AutoConfig, AutoTokenizer, DynamicCache
+from transformers import (
+    AutoConfig,
+    AutoTokenizer,
+    DynamicCache,
+    Glm5NextForConditionalGeneration,
+)
+
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerBase
+    from transformers.modeling_outputs import MoeCausalLMOutputWithPast
 
 GLM_TARGET = "zai-org/GLM-5.3-Flash"
 
-_CONFIG_REGISTERED = False
+
+class _EvaluatorArgs(Protocol):
+    """Structural view of the evaluator args the GLM evaluator reads."""
+
+    tasks: str
+    seed: int
+    target_name_or_path: str
+    draft_name_or_path: str
 
 
+@functools.cache
 def _register_dspark_config() -> None:
-    global _CONFIG_REGISTERED
-    if not _CONFIG_REGISTERED:
-        AutoConfig.register("glm5_dspark", Glm5DsparkConfig)
-        _CONFIG_REGISTERED = True
+    """Register the GLM drafter config class with transformers (run once)."""
+    AutoConfig.register("glm5_dspark", Glm5DsparkConfig)
 
 
 class _NoOpDraftCache:
@@ -53,7 +71,8 @@ class _NoOpDraftCache:
     (always 0) and a no-op crop().
     """
 
-    def get_seq_length(self, layer_idx: int | None = None) -> int:
+    def get_seq_length(self, _layer_idx: int | None = None) -> int:
+        """Report zero cached draft length; the drafter re-attends to full context."""
         return 0
 
     def crop(self, max_length: int) -> None:
@@ -64,9 +83,13 @@ class Glm5DsparkEvaluator(Qwen3DSparkEvaluator):
     """Evaluator over a GLM-5.3-Flash target with a DSpark drafter."""
 
     draft_model_cls = Glm5DsparkModel
-    chat_template_kwargs = {"reasoning_effort": "low", "clear_thinking": True}
+    chat_template_kwargs: ClassVar[dict[str, object]] = {
+        "reasoning_effort": "low",
+        "clear_thinking": True,
+    }
 
-    def __init__(self, local_rank: int, args):
+    def __init__(self, local_rank: int, args: _EvaluatorArgs) -> None:
+        """Initialize the single-process, world-1 GLM evaluator."""
         del local_rank
         self.args = args
         torch.cuda.set_device(0)
@@ -87,10 +110,11 @@ class Glm5DsparkEvaluator(Qwen3DSparkEvaluator):
         self.metrics_rows: list[dict[str, object]] = []
         self.confidence_head_recorder = self._build_confidence_head_recorder()
 
-    def build_models(self):
+    def build_models(
+        self,
+    ) -> tuple[Glm5NextForConditionalGeneration, Glm5DsparkModel, PreTrainedTokenizerBase]:
+        """Load the GLM target (sharded, single process) and the drafter."""
         _register_dspark_config()
-        from transformers import Glm5NextForConditionalGeneration
-
         target_model = Glm5NextForConditionalGeneration.from_pretrained(
             self.args.target_name_or_path,
             dtype=torch.bfloat16,
@@ -106,7 +130,7 @@ class Glm5DsparkEvaluator(Qwen3DSparkEvaluator):
         tokenizer = AutoTokenizer.from_pretrained(self.args.target_name_or_path)
         return target_model, draft_model, tokenizer
 
-    def new_target_cache(self):
+    def new_target_cache(self) -> DynamicCache:
         """Build the target cache for GLM's hybrid linear-attention layers.
 
         A bare DynamicCache would hold only KV layers; the GLM text stack
@@ -114,14 +138,19 @@ class Glm5DsparkEvaluator(Qwen3DSparkEvaluator):
         """
         return DynamicCache(config=self.target_model.config.text_config)
 
-    def _extract(self, output) -> torch.Tensor:
+    def _extract(self, output: MoeCausalLMOutputWithPast) -> torch.Tensor:
         return extract_glm_context_feature(
             output.hidden_states,
             list(self.draft_model.target_layer_ids),
             output.hidden_states[-1],
         )
 
-    def _init_context(self, *, initial_output, **kwargs) -> SimpleNamespace:
+    def _init_context(
+        self,
+        *,
+        initial_output: MoeCausalLMOutputWithPast,
+        **kwargs: object,
+    ) -> SimpleNamespace:
         del kwargs
         return SimpleNamespace(
             past_key_values_draft=_NoOpDraftCache(),
@@ -145,14 +174,13 @@ class Glm5DsparkEvaluator(Qwen3DSparkEvaluator):
         dataset_name: str,
         max_samples: int | None,
     ) -> list[SimpleNamespace]:
+        """Render the dataset prompts and generate one draft-verified response each."""
         seed_all(int(self.args.seed))
         dataset = load_and_process_dataset(
             dataset_name,
             dataset_root=DEFAULT_DATASET_ROOT,
         )
         if max_samples is not None and len(dataset) > max_samples:
-            import random
-
             rng = random.Random(int(self.args.seed))
             dataset = list(dataset)
             rng.shuffle(dataset)
