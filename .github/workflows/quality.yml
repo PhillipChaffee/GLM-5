@@ -129,7 +129,10 @@ jobs:
       - name: Markdown lint (markdownlint-cli2 v0.23.2)
         run: markdownlint-cli2 "**/*.md"
       - name: Link check (lychee v0.24.2)
-        run: lychee --no-progress .
+        # Low concurrency + backoff retries: at the default 128 concurrent
+        # anonymous requests, github.com rate-limits the burst with 503s and
+        # a different link fails each run (observed 2026-10-12, twice).
+        run: lychee --no-progress --max-concurrency 4 --max-retries 5 --retry-wait-time 3 .
       - name: Secret scan (gitleaks v8.30.1)
         # full-history scan (fetch-depth 0 above); the local gate scans the
         # working tree with --no-git instead
