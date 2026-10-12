@@ -105,7 +105,7 @@ For real-time phone-call agents the MTP draft layer adds ~8-9 GiB, and a DSpark-
 
 - HF config (authoritative): <https://huggingface.co/zai-org/GLM-5.3-Flash/resolve/main/config.json>
 - HF model card: <https://huggingface.co/zai-org/GLM-5.3-Flash>
-- z.ai blog (text extracted from <https://z.ai/blog/assets/glm-5.3-flash--uSKeP6w.js>; page <https://z.ai/blog/glm-5.3-flash> is a JS-rendered SPA)
+- z.ai blog (text extracted from the page's JS bundle at fetch time, 2026-10; the bundle URL has since rotated — 404; page <https://z.ai/blog/glm-5.3-flash> is a JS-rendered SPA)
 - SGLang cookbook: <https://cookbook.sglang.io/autoregressive/GLM/GLM-5.3-Flash>
 - SGLang speculative decoding docs: <https://docs.sglang.io/docs/advanced_features/speculative_decoding.md> and <https://docs.sglang.io/docs/advanced_features/adaptive_speculative_decoding.md>
 - vLLM recipe: <https://recipes.vllm.ai/zai-org/GLM-5.3-Flash>
