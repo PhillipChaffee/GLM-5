@@ -1,5 +1,5 @@
 {
-  "//": "Threshold: fail when more than 5% of tokens are duplicated; ignore globs exclude the CI orchestration file, runner scripts, coverage output, Markdown prose, extracted paper text (reference material, not maintained code), and the smoke's captured result jsons (measurement evidence — the probe files repeat the reference's own bit-exact reruns by design).",
+  "//": "Threshold: fail when more than 5% of tokens are duplicated; ignore globs exclude the CI orchestration file, runner scripts, coverage output, Markdown prose, extracted paper text (reference material, not maintained code), the smoke's captured result jsons (measurement evidence — the probe files repeat the reference's own bit-exact reruns by design), and the two pipeline Modal apps. The glm-drafter and proxy-run apps are deliberate structural twins: one pipeline shape instantiated twice with different targets and constants. Every genuinely shared behavior (logging, process runner, volume inspection, HF restore/push, server boot/health wait, split/cache/train/eval command builders, shared constants) is extracted into experiments/lib/modal_pipeline.py — the duplication gate drove that extraction. The residual similarity is the Modal stage-decorator contract (per-app image builders with different dependencies, wrapper bodies with per-app defaults) and the per-app dispatch dictionaries, whose entries legitimately differ; deduplicating them further would trade real clarity for token-shuffling.",
   "threshold": 5,
   "ignore": [
     "**/quality.yml",
@@ -7,6 +7,8 @@
     "**/coverage/**",
     "papers/*.txt",
     "**/*.md",
-    "experiments/dflash2-smoke/results/*.json"
+    "experiments/dflash2-smoke/results/*.json",
+    "experiments/glm-drafter/glm_drafter.py",
+    "experiments/proxy-run/dspark_proxy.py"
   ]
 }

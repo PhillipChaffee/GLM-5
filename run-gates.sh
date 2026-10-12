@@ -36,7 +36,11 @@ add "lint" "ruff check ."
 add "format" "ruff format --check ."
 add "types" "mypy ."
 add "tests+coverage" "pytest"
-add "cognitive" "complexipy ."
+# The GLM overlay tree is excluded from the cognitive gate (the -e flag;
+# complexipy's pyproject key for excludes is not honored): it mirrors
+# upstream DeepSpec package files whose complexity is upstream's to
+# maintain. See the mypy/deptry excludes for the same tree.
+add "cognitive" "complexipy . --exclude 'experiments/glm-drafter/deepspec_glm/**'"
 add "file-length" "./effective-lines-gate.sh"
 
 add "spell-check" "typos"
