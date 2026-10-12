@@ -36,7 +36,17 @@ add "lint" "ruff check ."
 add "format" "ruff format --check ."
 add "types" "mypy ."
 add "tests+coverage" "pytest"
-add "cognitive" "complexipy ."
+# The cognitive gate scans the whole overlay except the three upstream
+# clone files (clone + minimal patch), whose complexity is upstream's to
+# maintain; every GLM-authored overlay file is measured. The exclude
+# patterns live in complexipy-excludes.txt — the single source shared
+# with quality.yml's cognitive step (the tool ignores its pyproject key).
+# See the mypy exclude and the ruff per-file-ignores for the same mirror set.
+complexipy_excludes=()
+while IFS= read -r pattern; do
+	[ -n "$pattern" ] && complexipy_excludes+=(--exclude "$pattern")
+done <complexipy-excludes.txt
+add "cognitive" "complexipy . ${complexipy_excludes[*]}"
 add "file-length" "./effective-lines-gate.sh"
 
 add "spell-check" "typos"

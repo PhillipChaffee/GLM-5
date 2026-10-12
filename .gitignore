@@ -17,6 +17,9 @@ eggs/
 .eggs/
 lib/
 lib64/
+# exception to lib/ above: the experiments' shared Modal-pipeline library
+# (imported as `lib.modal_pipeline` by experiments/*/ apps)
+!experiments/lib/
 parts/
 sdist/
 var/
