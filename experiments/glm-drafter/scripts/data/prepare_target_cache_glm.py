@@ -159,7 +159,7 @@ def parse_args():
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--min-loss-tokens", type=int, default=14)
     parser.add_argument("--max-shard-bytes", type=int, default=64 * 1024**3)
-    parser.add_argument("--local-batch-size", type=int, default=32)
+    parser.add_argument("--local-batch-size", type=int, default=2)
     parser.add_argument("--num-workers", type=int, default=4)
     cli_args = parser.parse_args()
     config = parse_opts_to_config(cli_args.opts, load_config(cli_args.config))
