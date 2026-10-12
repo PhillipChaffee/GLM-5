@@ -284,7 +284,7 @@ def regen(sample_size: int = 700, concurrency: int = 64, max_tokens: int = 4096)
     },
     secrets=[hf_secret],
 )
-def cache(local_batch_size: int = 16) -> None:
+def cache(local_batch_size: int = 2) -> None:
     """Build the target hidden-state cache in a single process with device_map=auto."""
     _run(
         build_cache_cmd(
@@ -551,6 +551,7 @@ def _build_dispatch(
     concurrency: int,
     exp_name: str,
     epochs: int,
+    cache_batch_size: int,
     local_batch_size: int,
     head_type: str,
     max_steps: int,
@@ -567,7 +568,7 @@ def _build_dispatch(
         "probe": (probe, {}),
         "split": (split, {"sample_size": sample_size, "seed": seed}),
         "regen": (regen, {"sample_size": sample_size, "concurrency": concurrency}),
-        "cache": (cache, {"local_batch_size": local_batch_size}),
+        "cache": (cache, {"local_batch_size": cache_batch_size}),
         "train": (
             train,
             {
@@ -627,6 +628,7 @@ def main(
     concurrency: int = 64,
     exp_name: str = "glm_drafter_block7_glm53flash",
     epochs: int = 10,
+    cache_batch_size: int = 2,
     local_batch_size: int = 4,
     head_type: str = "vanilla",
     max_steps: int = 0,
@@ -646,6 +648,7 @@ def main(
         concurrency=concurrency,
         exp_name=exp_name,
         epochs=epochs,
+        cache_batch_size=cache_batch_size,
         local_batch_size=local_batch_size,
         head_type=head_type,
         max_steps=max_steps,
