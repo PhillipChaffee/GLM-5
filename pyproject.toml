@@ -20,7 +20,7 @@ dependencies = ["pypdf>=6.19.0"]
 # experiments/proxy-run/dspark_proxy.py), not a PyPI package, so deptry
 # carries the documented exception instead.
 [project.optional-dependencies]
-experiments = ["torch", "modal", "datasets", "huggingface_hub", "transformers"]
+experiments = ["torch", "modal", "datasets", "huggingface_hub", "transformers", "openai", "safetensors", "tqdm"]
 
 [tool.ruff]
 line-length = 100                   # 88 is ruff's default; 100 is a deliberate widening — the formatter wraps code to it and E501 flags what wrapping cannot touch (long strings, comments)
@@ -115,12 +115,293 @@ convention = "google"
     # `modal run` parses this file locally, where huggingface_hub is not
     # installed; moving the import to module level breaks the parse.
     "PLC0415",
+    # The shared pipeline lib sits beside the app files, not on the local
+    # default import path; the sys.path shim above the import is deliberate.
+    "E402",
 ]
 
 "experiments/dflash2-smoke/dflash2_smoke.py" = [
     # Same reason as dspark_proxy.py above: `modal run` parses this file in
     # the local environment, where huggingface_hub is not installed.
     "PLC0415",
+]
+
+"experiments/glm-drafter/tests/**" = [
+    # Same bar as the root tests/ suite (see that entry): assertions,
+    # literals, and short raises are the mechanics of pytest itself.
+    "D1",
+    "S101",
+    "PLR2004",
+    "ARG001", "ARG002",
+    "FBT001", "FBT002",
+    "S105", "S106", "S107", "S108",
+    "SLF001",
+    "EM101", "EM102",
+    "INP001",
+]
+
+"experiments/glm-drafter/glm_drafter.py" = [
+    # Same reason as dspark_proxy.py above: `modal run` parses this file in
+    # the local environment, where huggingface_hub/transformers are not
+    # installed, so the probe stage imports them inside the function.
+    "PLC0415",
+    # The shared pipeline lib sits beside the app files, not on the local
+    # default import path; the sys.path shim above the import is deliberate.
+    "E402",
+]
+
+"experiments/lib/modal_pipeline.py" = [
+    # Same reason as the two Modal apps above: huggingface_hub resolves
+    # only inside Modal runtime, so its imports stay inside the functions
+    # that use it.
+    "PLC0415",
+]
+
+"experiments/glm-drafter/tests/conftest.py" = [
+    # The deferred transformers import inside the fixture IS the skip
+    # mechanism: importing it at module level would crash collection on
+    # machines without the dependency instead of reporting a skip.
+    "PLC0415",
+]
+
+"experiments/glm-drafter/deepspec_glm/deepspec/data/parser.py" = [
+    # The six files below are upstream DeepSpec files carried in the overlay
+    # (clone + minimal patch, or constants/exports additions): parser.py,
+    # the two evaluator files, the constants file, and the two __init__
+    # exports. They keep upstream's idioms (untyped signatures, `print` as
+    # the script channel, `assert False` flow control, os.path over
+    # pathlib, plain dict() calls, blind exception catches around
+    # per-sample HTTP/IO) so deltas stay diff-able against the pinned
+    # upstream clone. Every GLM-authored file in the overlay tree
+    # (modeling/dspark/glm5/*, trainer/glm5_trainer.py,
+    # eval/dspark/glm5_eval.py) holds the full bar — no entry below.
+"ANN001", "ANN201", "ANN202", "ANN204", "ANN003",
+    "D100", "D101", "D102", "D103", "D104", "D107",
+    "T201",
+    "S101", "S106",
+    "B011",
+    "EM101", "EM102",
+    "BLE001",
+    "PLR2004", "PLR0915", "PLR0917",
+    "C408",
+    "FBT001", "FBT002",
+    "PTH100", "PTH103", "PTH110", "PTH111", "PTH112", "PTH118", "PTH119", "PTH123",
+    "PLC0415",
+    "PLW0603", "PLW2901",
+    "SLF001",
+    "RUF012",
+    "PT015", "PT018",
+    "INP001",
+    "TC003",
+    "ERA001",
+    "B905",
+    "SIM102",
+    "ARG002",
+]
+
+"experiments/glm-drafter/deepspec_glm/deepspec/eval/base_evaluator.py" = [
+    # The six files below are upstream DeepSpec files carried in the overlay
+    # (clone + minimal patch, or constants/exports additions): parser.py,
+    # the two evaluator files, the constants file, and the two __init__
+    # exports. They keep upstream's idioms (untyped signatures, `print` as
+    # the script channel, `assert False` flow control, os.path over
+    # pathlib, plain dict() calls, blind exception catches around
+    # per-sample HTTP/IO) so deltas stay diff-able against the pinned
+    # upstream clone. Every GLM-authored file in the overlay tree
+    # (modeling/dspark/glm5/*, trainer/glm5_trainer.py,
+    # eval/dspark/glm5_eval.py) holds the full bar — no entry below.
+"ANN001", "ANN201", "ANN202", "ANN204", "ANN003",
+    "D100", "D101", "D102", "D103", "D104", "D107",
+    "T201",
+    "S101", "S106",
+    "B011",
+    "EM101", "EM102",
+    "BLE001",
+    "PLR2004", "PLR0915", "PLR0917",
+    "C408",
+    "FBT001", "FBT002",
+    "PTH100", "PTH103", "PTH110", "PTH111", "PTH112", "PTH118", "PTH119", "PTH123",
+    "PLC0415",
+    "PLW0603", "PLW2901",
+    "SLF001",
+    "RUF012",
+    "PT015", "PT018",
+    "INP001",
+    "TC003",
+    "ERA001",
+    "B905",
+    "SIM102",
+    "ARG002",
+]
+
+"experiments/glm-drafter/deepspec_glm/deepspec/eval/dspark/evaluator.py" = [
+    # The six files below are upstream DeepSpec files carried in the overlay
+    # (clone + minimal patch, or constants/exports additions): parser.py,
+    # the two evaluator files, the constants file, and the two __init__
+    # exports. They keep upstream's idioms (untyped signatures, `print` as
+    # the script channel, `assert False` flow control, os.path over
+    # pathlib, plain dict() calls, blind exception catches around
+    # per-sample HTTP/IO) so deltas stay diff-able against the pinned
+    # upstream clone. Every GLM-authored file in the overlay tree
+    # (modeling/dspark/glm5/*, trainer/glm5_trainer.py,
+    # eval/dspark/glm5_eval.py) holds the full bar — no entry below.
+"ANN001", "ANN201", "ANN202", "ANN204", "ANN003",
+    "D100", "D101", "D102", "D103", "D104", "D107",
+    "T201",
+    "S101", "S106",
+    "B011",
+    "EM101", "EM102",
+    "BLE001",
+    "PLR2004", "PLR0915", "PLR0917",
+    "C408",
+    "FBT001", "FBT002",
+    "PTH100", "PTH103", "PTH110", "PTH111", "PTH112", "PTH118", "PTH119", "PTH123",
+    "PLC0415",
+    "PLW0603", "PLW2901",
+    "SLF001",
+    "RUF012",
+    "PT015", "PT018",
+    "INP001",
+    "TC003",
+    "ERA001",
+    "B905",
+    "SIM102",
+    "ARG002",
+]
+
+"experiments/glm-drafter/deepspec_glm/deepspec/utils/constant/public.py" = [
+    # The six files below are upstream DeepSpec files carried in the overlay
+    # (clone + minimal patch, or constants/exports additions): parser.py,
+    # the two evaluator files, the constants file, and the two __init__
+    # exports. They keep upstream's idioms (untyped signatures, `print` as
+    # the script channel, `assert False` flow control, os.path over
+    # pathlib, plain dict() calls, blind exception catches around
+    # per-sample HTTP/IO) so deltas stay diff-able against the pinned
+    # upstream clone. Every GLM-authored file in the overlay tree
+    # (modeling/dspark/glm5/*, trainer/glm5_trainer.py,
+    # eval/dspark/glm5_eval.py) holds the full bar — no entry below.
+"ANN001", "ANN201", "ANN202", "ANN204", "ANN003",
+    "D100", "D101", "D102", "D103", "D104", "D107",
+    "T201",
+    "S101", "S106",
+    "B011",
+    "EM101", "EM102",
+    "BLE001",
+    "PLR2004", "PLR0915", "PLR0917",
+    "C408",
+    "FBT001", "FBT002",
+    "PTH100", "PTH103", "PTH110", "PTH111", "PTH112", "PTH118", "PTH119", "PTH123",
+    "PLC0415",
+    "PLW0603", "PLW2901",
+    "SLF001",
+    "RUF012",
+    "PT015", "PT018",
+    "INP001",
+    "TC003",
+    "ERA001",
+    "B905",
+    "SIM102",
+    "ARG002",
+]
+
+"experiments/glm-drafter/deepspec_glm/deepspec/trainer/__init__.py" = [
+    # The six files below are upstream DeepSpec files carried in the overlay
+    # (clone + minimal patch, or constants/exports additions): parser.py,
+    # the two evaluator files, the constants file, and the two __init__
+    # exports. They keep upstream's idioms (untyped signatures, `print` as
+    # the script channel, `assert False` flow control, os.path over
+    # pathlib, plain dict() calls, blind exception catches around
+    # per-sample HTTP/IO) so deltas stay diff-able against the pinned
+    # upstream clone. Every GLM-authored file in the overlay tree
+    # (modeling/dspark/glm5/*, trainer/glm5_trainer.py,
+    # eval/dspark/glm5_eval.py) holds the full bar — no entry below.
+"ANN001", "ANN201", "ANN202", "ANN204", "ANN003",
+    "D100", "D101", "D102", "D103", "D104", "D107",
+    "T201",
+    "S101", "S106",
+    "B011",
+    "EM101", "EM102",
+    "BLE001",
+    "PLR2004", "PLR0915", "PLR0917",
+    "C408",
+    "FBT001", "FBT002",
+    "PTH100", "PTH103", "PTH110", "PTH111", "PTH112", "PTH118", "PTH119", "PTH123",
+    "PLC0415",
+    "PLW0603", "PLW2901",
+    "SLF001",
+    "RUF012",
+    "PT015", "PT018",
+    "INP001",
+    "TC003",
+    "ERA001",
+    "B905",
+    "SIM102",
+    "ARG002",
+]
+
+"experiments/glm-drafter/deepspec_glm/deepspec/modeling/dspark/__init__.py" = [
+    # The six files below are upstream DeepSpec files carried in the overlay
+    # (clone + minimal patch, or constants/exports additions): parser.py,
+    # the two evaluator files, the constants file, and the two __init__
+    # exports. They keep upstream's idioms (untyped signatures, `print` as
+    # the script channel, `assert False` flow control, os.path over
+    # pathlib, plain dict() calls, blind exception catches around
+    # per-sample HTTP/IO) so deltas stay diff-able against the pinned
+    # upstream clone. Every GLM-authored file in the overlay tree
+    # (modeling/dspark/glm5/*, trainer/glm5_trainer.py,
+    # eval/dspark/glm5_eval.py) holds the full bar — no entry below.
+"ANN001", "ANN201", "ANN202", "ANN204", "ANN003",
+    "D100", "D101", "D102", "D103", "D104", "D107",
+    "T201",
+    "S101", "S106",
+    "B011",
+    "EM101", "EM102",
+    "BLE001",
+    "PLR2004", "PLR0915", "PLR0917",
+    "C408",
+    "FBT001", "FBT002",
+    "PTH100", "PTH103", "PTH110", "PTH111", "PTH112", "PTH118", "PTH119", "PTH123",
+    "PLC0415",
+    "PLW0603", "PLW2901",
+    "SLF001",
+    "RUF012",
+    "PT015", "PT018",
+    "INP001",
+    "TC003",
+    "ERA001",
+    "B905",
+    "SIM102",
+    "ARG002",
+]
+
+"experiments/glm-drafter/scripts/data/generate_train_data_glm.py" = [
+    # Deliberate line-for-line mirror of upstream DeepSpec
+    # scripts/data/generate_train_data.py (per-turn on-policy loop,
+    # resume, server validation) with GLM template kwargs; upstream's
+    # untyped signatures, print-based logging, os.path paths, and
+    # string-literal exceptions are kept so the file stays diff-able
+    # against the pinned upstream script.
+    "ANN001", "ANN201", "ANN202",
+    "T201",
+    "PTH110", "PTH118", "PTH123",
+    "BLE001",
+    "EM101", "EM102",
+]
+
+"experiments/glm-drafter/scripts/data/prepare_target_cache_glm.py" = [
+    # Same mirror rationale as generate_train_data_glm.py above: this is
+    # upstream DeepSpec scripts/data/prepare_target_cache.py converted to
+    # a single process with device_map="auto" and the mHC fold deltas;
+    # upstream's forward loop, manifest plumbing, print channel, os.path
+    # paths, and untyped signatures are kept so GLM deltas stay
+    # diff-able against the pinned upstream script.
+    "ANN001", "ANN201", "ANN202", "ANN204",
+    "D101", "D103",
+    "T201",
+    "PTH100", "PTH103", "PTH110", "PTH118",
+    "EM102",
+    "PLR0915", "PLR2004",
+    "PLW2901",
 ]
 
 [tool.complexipy]
@@ -136,6 +417,10 @@ convention = "google"
 # slightly stricter than the spec. Remedy: extract a function
 # (`--suggest-refactors` prints deterministic plans).
 max-complexity-allowed = 15
+# The GLM overlay tree is excluded from the cognitive gate via the
+# complexipy --exclude flag in run-gates.sh (its pyproject key for
+# excludes is not honored): it mirrors upstream DeepSpec package files
+# whose own complexity is upstream's, not this repo's, to maintain.
 
 [tool.mypy]
 strict = true
@@ -154,6 +439,12 @@ warn_unreachable = true
 python_version = "3.12"
 # Default is the running interpreter's version; pinned to the
 # requires-python floor so the type scale does not drift with each dev's env.
+exclude = [
+    # Only the six upstream-mirrored overlay files stay out of mypy's
+    # scope (see the ruff per-file-ignores entries for the same set);
+    # every GLM-authored overlay file is typed and strict-checked.
+    'experiments/glm-drafter/deepspec_glm/deepspec/(data/parser|eval/base_evaluator|eval/dspark/evaluator|utils/constant/public|trainer/__init__|modeling/dspark/__init__)\.py$',
+]
 
 [[tool.mypy.overrides]]
 # The experiments/ research stack is not installed in the gate environment:
@@ -169,7 +460,56 @@ module = [
     "datasets", "datasets.*",
     "huggingface_hub", "huggingface_hub.*",
     "transformers", "transformers.*",
+    "openai", "openai.*",
+    "safetensors", "safetensors.*",
+    "tqdm", "tqdm.*",
     "deepspec", "deepspec.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Same mirror rationale as the ruff per-file-ignores for the two data
+# scripts: both mirror upstream DeepSpec scripts/data/*.py (per-turn
+# on-policy regen; single-process target cache) with GLM deltas, keeping
+# upstream's untyped signatures for diff-ability. Bodies stay exercised
+# by pytest-adjacent smoke tests and ruff.
+module = ["generate_train_data_glm", "prepare_target_cache_glm"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = false
+disallow_untyped_calls = false
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The hook-equivalence test builds a mock mHC target from torch/nn at
+# runtime; the gate environment intentionally carries no torch, so the
+# module sees Any for it. torch behavior is verified by the real pytest
+# run, not by types.
+module = ["test_glm5_hook_equivalence"]
+ignore_missing_imports = true
+disallow_subclassing_any = false
+
+[[tool.mypy.overrides]]
+# The GLM-authored overlay modules subclass transformers/DeepSpec base
+# classes that resolve to Any in the gate environment (no heavy wheels
+# there by design); runtime behavior is exercised by pytest and the GPU
+# smoke, so the subclass boundary is relaxed here only.
+module = [
+    "dspark.glm5.*",
+    "glm5_eval",
+    "trainer.glm5_trainer",
+]
+disallow_subclassing_any = false
+
+[[tool.mypy.overrides]]
+# The two mirror __init__ files load as package inits for crawled modules
+# (mypy needs them for the package hierarchy even though they are excluded
+# from the crawl), and their relative imports target sibling mirror files
+# that are themselves out of mypy's scope. Silence exactly those six
+# pseudo-module names; nothing else.
+module = [
+    "dspark.common", "dspark.gemma4", "dspark.qwen3",
+    "trainer.base_trainer", "trainer.dspark_trainer", "trainer.eagle3_trainer",
 ]
 ignore_missing_imports = true
 
@@ -183,7 +523,16 @@ ignore_missing_imports = true
 # mypy derives top-level names; if __init__.py files ever appear, these
 # stop matching and the rule fails loudly again — the desired
 # fail-closed direction.
-module = ["dspark_proxy", "timed_eval", "make_split", "dflash2_smoke"]
+module = [
+    "dspark_proxy",
+    "timed_eval",
+    "make_split",
+    "dflash2_smoke",
+    "glm_drafter",
+    "generate_train_data_glm",
+    "prepare_target_cache_glm",
+    "timed_eval_glm",
+]
 disallow_untyped_decorators = false
 
 [tool.pytest.ini_options]
@@ -216,6 +565,17 @@ fail_under = 95
 # The percentage is branch-inclusive when branch = true above.
 
 [tool.deptry]
+# The six upstream-mirrored overlay files (see the ruff per-file-ignores)
+# import upstream's own dependency surface (e.g. prettytable); they stay
+# out of the scan while every GLM-authored file is checked.
+exclude = [
+    "experiments/glm-drafter/deepspec_glm/deepspec/data/parser.py",
+    "experiments/glm-drafter/deepspec_glm/deepspec/eval/base_evaluator.py",
+    "experiments/glm-drafter/deepspec_glm/deepspec/eval/dspark/evaluator.py",
+    "experiments/glm-drafter/deepspec_glm/deepspec/utils/constant/public.py",
+    "experiments/glm-drafter/deepspec_glm/deepspec/trainer/__init__.py",
+    "experiments/glm-drafter/deepspec_glm/deepspec/modeling/dspark/__init__.py",
+]
 # deptry compares the imports the code makes against the dependencies this
 # file declares ([project.dependencies]). Every default stays, so all four
 # rules fire: DEP001 (imported but not declared), DEP002 (declared but never
@@ -230,7 +590,10 @@ fail_under = 95
 # package, so DEP001 cannot be satisfied by declaration. The PyPI stack it
 # rides with (torch, modal, datasets, huggingface_hub) is declared in
 # [project.optional-dependencies].experiments.
-DEP001 = ["deepspec"]
+DEP001 = ["deepspec", "lib"]
+# pytest is the test runner itself: it arrives with the gate environment
+# (requirements-lock.txt), not as a declared project dependency.
+DEP003 = ["pytest"]
 
 [tool.vulture]
 # vulture reports names defined but never referenced. Paths are passed on

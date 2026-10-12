@@ -6,26 +6,45 @@ images; the volume carries data, caches, checkpoints, and results.
 
 from __future__ import annotations
 
-import subprocess
 import sys
-import time
-import urllib.request
 from pathlib import Path
 from typing import Any
 
 import modal
 
-DEEPSPEC_REPO = "https://github.com/deepseek-ai/DeepSpec"
-DEEPSPEC_SHA = "005e03b81cec38b7da6399833d609ee89a2587f2"
-DEEPSPEC_DIR = "/deepspec"
-VOL = "/vol"
-HOME = "/vol/home"
+_EXPERIMENTS_DIR = Path(__file__).resolve().parent.parent
+if str(_EXPERIMENTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_EXPERIMENTS_DIR))
+
+from lib.modal_pipeline import (
+    DEEPSPEC_DIR,
+    DEEPSPEC_REPO,
+    DEEPSPEC_SHA,
+    DEFAULT_TASKS,
+    HOME,
+    MAX_LISTED_FILES,
+    VOL,
+    VOLUME_ROOTS,
+    build_cache_cmd,
+    build_eval_cmd,
+    build_train_cmd,
+    fetch_result_bytes,
+    inspect_volume,
+    push_jobs_to_hf,
+    restore_from_hf,
+    serve_and_run_client,
+)
+from lib.modal_pipeline import (
+    log as _log,
+)
+from lib.modal_pipeline import (
+    run as _run,
+)
+
 VOLUME_NAME = "dspark-proxy-run"
 TARGET = "Qwen/Qwen3-4B"
 RELEASED_DRAFT = "deepseek-ai/dspark_qwen3_4b_block7"
 LOCAL_DIR = Path(__file__).parent.resolve()
-DEFAULT_TASKS = "gsm8k:300,math500:300,humaneval:164,mbpp:256,mt-bench:80,alpaca:300"
-MAX_LISTED_FILES = 60  # inspect lists at most this many files per directory
 
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
@@ -79,22 +98,6 @@ hf_secret = modal.Secret.from_name("hf-token")
 app = modal.App("dspark-proxy-run")
 
 
-def _log(message: str) -> None:
-    """Print a line immediately (the print-free lint gate owns this shape)."""
-    sys.stdout.write(f"{message}\n")
-    sys.stdout.flush()
-
-
-def _run(cmd: list[str], cwd: str | None = None) -> None:
-    """Run a command, failing loudly on a nonzero exit."""
-    _log("+ " + " ".join(cmd))
-    try:
-        subprocess.run(cmd, cwd=cwd, check=True)
-    except subprocess.CalledProcessError as exc:
-        msg = f"command failed rc={exc.returncode}: {' '.join(cmd)}"
-        raise RuntimeError(msg) from exc
-
-
 @app.function(image=util_image, volumes={VOL: volume}, timeout=3600, cpu=8, memory=32768)
 def split(sample_size: int = 20000, seed: int = 42) -> None:
     """Write the shuffled training split onto the volume."""
@@ -122,65 +125,48 @@ def split(sample_size: int = 20000, seed: int = 42) -> None:
 )
 def regen(sample_size: int = 20000, concurrency: int = 64, max_tokens: int = 4096) -> None:
     """Serve vLLM on the target and regenerate DeepSpec training data through it."""
-    input_path = f"{VOL}/data/perfectblend_train.jsonl"
-    output_path = f"{VOL}/data/regen.jsonl"
-    t0 = time.time()
-    server = subprocess.Popen(
-        ["vllm", "serve", TARGET, "--port", "30000", "--max-model-len", "12288"],
+    elapsed = serve_and_run_client(
+        server_cmd=[
+            "vllm",
+            "serve",
+            TARGET,
+            "--port",
+            "30000",
+            "--max-model-len",
+            "12288",
+        ],
+        health_url="http://127.0.0.1:30000/health",
+        health_deadline_s=30 * 60,
+        server_name="vllm",
+        client_cmd=[
+            "python",
+            f"{DEEPSPEC_DIR}/scripts/data/generate_train_data.py",
+            "--model",
+            TARGET,
+            "--server-address",
+            "127.0.0.1:30000",
+            "--concurrency",
+            str(concurrency),
+            "--temperature",
+            "0.7",
+            "--top-p",
+            "0.8",
+            "--top-k",
+            "20",
+            "--max-tokens",
+            str(max_tokens),
+            "--disable-thinking",
+            "--resume",
+            "--num-samples",
+            str(sample_size),
+            "--input-file-path",
+            f"{VOL}/data/perfectblend_train.jsonl",
+            "--output-file-path",
+            f"{VOL}/data/regen.jsonl",
+        ],
     )
-    deadline = time.time() + 30 * 60
-    while True:
-        if server.poll() is not None:
-            msg = "vllm server exited during startup"
-            raise RuntimeError(msg)
-        try:
-            urllib.request.urlopen("http://127.0.0.1:30000/health", timeout=5)
-            break
-        except OSError as exc:
-            if time.time() > deadline:
-                server.terminate()
-                msg = "vllm server did not become healthy in 30 minutes"
-                raise RuntimeError(msg) from exc
-            time.sleep(10)
-    _log(f"vllm healthy after {time.time() - t0:.0f}s")
-    try:
-        _run(
-            [
-                "python",
-                f"{DEEPSPEC_DIR}/scripts/data/generate_train_data.py",
-                "--model",
-                TARGET,
-                "--server-address",
-                "127.0.0.1:30000",
-                "--concurrency",
-                str(concurrency),
-                "--temperature",
-                "0.7",
-                "--top-p",
-                "0.8",
-                "--top-k",
-                "20",
-                "--max-tokens",
-                str(max_tokens),
-                "--disable-thinking",
-                "--resume",
-                "--num-samples",
-                str(sample_size),
-                "--input-file-path",
-                input_path,
-                "--output-file-path",
-                output_path,
-            ]
-        )
-    finally:
-        server.terminate()
-        try:
-            server.wait(timeout=120)
-        except subprocess.TimeoutExpired:
-            server.kill()
-            server.wait(timeout=60)
     volume.commit()
-    _log(f"regen done in {(time.time() - t0) / 60:.1f} min")
+    _log(f"regen done in {elapsed / 60:.1f} min")
 
 
 @app.function(
@@ -193,18 +179,13 @@ def regen(sample_size: int = 20000, concurrency: int = 64, max_tokens: int = 409
 def cache(local_batch_size: int = 16) -> None:
     """Build the target hidden-state cache from the regenerated data."""
     _run(
-        [
-            "python",
-            "scripts/data/prepare_target_cache.py",
-            "--config",
-            "config/dspark/dspark_qwen3_4b.py",
-            "--train-data-path",
-            f"{VOL}/data/regen.jsonl",
-            "--output-dir",
-            f"{VOL}/cache",
-            "--local-batch-size",
-            str(local_batch_size),
-        ],
+        build_cache_cmd(
+            config="config/dspark/dspark_qwen3_4b.py",
+            cache_script="scripts/data/prepare_target_cache.py",
+            train_data_path=f"{VOL}/data/regen.jsonl",
+            output_dir=f"{VOL}/cache",
+            local_batch_size=local_batch_size,
+        ),
         cwd=DEEPSPEC_DIR,
     )
     volume.commit()
@@ -234,25 +215,18 @@ def train(
     config-only override model.markov_head_type. max_steps truncates training
     after that many optimizer steps (0 = no override; smoke runs use it).
     """
-    cmd = [
-        "python",
-        "train.py",
-        "--config",
-        "config/dspark/dspark_qwen3_4b.py",
-        "--opts",
-        f"exp_name={exp_name}",
-        "--opts",
-        f"train.num_train_epochs={epochs}",
-        "--opts",
-        f"train.local_batch_size={local_batch_size}",
-        "--opts",
-        f"model.markov_head_type={head_type}",
-        "--opts",
-        "data.target_cache_path=/vol/cache",
-    ]
-    if max_steps:
-        cmd.extend(["--opts", f"train.max_train_steps={max_steps}"])
-    _run(cmd, cwd=DEEPSPEC_DIR)
+    _run(
+        build_train_cmd(
+            config="config/dspark/dspark_qwen3_4b.py",
+            exp_name=exp_name,
+            epochs=epochs,
+            local_batch_size=local_batch_size,
+            head_type=head_type,
+            cache_path="/vol/cache",
+            max_steps=max_steps,
+        ),
+        cwd=DEEPSPEC_DIR,
+    )
     volume.commit()
 
 
@@ -298,25 +272,19 @@ def evaluate(
 ) -> None:
     """Run the timed evaluator for one drafter and commit the result json."""
     Path(f"{VOL}/results").mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "python",
-        "/work/scripts/timed_eval.py",
-        "--target",
-        TARGET,
-        "--draft",
-        draft,
-        "--tasks",
-        tasks,
-        "--max-new-tokens",
-        str(max_new_tokens),
-        "--confidence-threshold",
-        str(confidence_threshold),
-        "--out",
-        f"{VOL}/results/{tag}.json",
-    ]
-    if baseline:
-        cmd.append("--baseline")
-    _run(cmd, cwd=DEEPSPEC_DIR)
+    _run(
+        build_eval_cmd(
+            script="/work/scripts/timed_eval.py",
+            target=TARGET,
+            draft=draft,
+            tasks=tasks,
+            max_new_tokens=max_new_tokens,
+            confidence_threshold=confidence_threshold,
+            out_path=f"{VOL}/results/{tag}.json",
+            baseline=baseline,
+        ),
+        cwd=DEEPSPEC_DIR,
+    )
     volume.commit()
 
 
@@ -351,29 +319,13 @@ def evaluate_smoke(
 def inspect() -> None:
     """Print a size summary of every directory on the volume."""
     volume.reload()
-    for root in ("data", "cache", "results", "home/checkpoints", "home/tensorboard"):
-        path = Path(VOL) / root
-        if not path.exists():
-            _log(f"{path}: missing")
-            continue
-        entries = []
-        total = 0
-        for item in sorted(path.rglob("*")):
-            if item.is_file():
-                size = item.stat().st_size
-                total += size
-                entries.append(f"  {item.relative_to(VOL)} {size}")
-        _log(f"{path}: {total / 1e9:.2f} GB across {len(entries)} files")
-        for line in entries[:MAX_LISTED_FILES]:
-            _log(line)
-        if len(entries) > MAX_LISTED_FILES:
-            _log(f"  ... {len(entries) - MAX_LISTED_FILES} more files")
+    inspect_volume(VOL, VOLUME_ROOTS, MAX_LISTED_FILES)
 
 
 @app.function(image=util_image, volumes={VOL: volume}, timeout=600)
 def fetch_result(name: str) -> bytes:
     """Read one result json from the volume."""
-    return (Path(VOL) / "results" / f"{name}.json").read_bytes()
+    return fetch_result_bytes(VOL, name)
 
 
 HF_ASSET_REPO = "phillipchaffee/dspark-proxy-run"
@@ -389,36 +341,8 @@ RESTORE_PATTERNS = ("cache/", "checkpoints/")
     secrets=[hf_secret],
 )
 def restore_hf(repo_id: str = HF_ASSET_REPO) -> None:
-    """Restore cache shards and the baseline checkpoint from the HF dataset repo.
-
-    Downloads with a small worker pool (3) and commits after each file: a
-    crashed run resumes where it stopped, and the gentle concurrency avoids
-    the parallel-xet contention that killed the first attempt (14 streams,
-    container heartbeat deadlines). Commits run on the main thread only.
-    """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    from huggingface_hub import HfApi, hf_hub_download
-
-    t0 = time.time()
-    api = HfApi()
-    files = [
-        name
-        for name in api.list_repo_files(repo_id, repo_type="dataset")
-        if name.startswith(RESTORE_PATTERNS)
-    ]
-
-    def fetch(name: str) -> str:
-        hf_hub_download(repo_id=repo_id, repo_type="dataset", filename=name, local_dir=VOL)
-        return name
-
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        futures = [pool.submit(fetch, name) for name in files]
-        for idx, future in enumerate(as_completed(futures), 1):
-            name = future.result()
-            volume.commit()
-            _log(f"[{idx}/{len(files)}] {name} done in {(time.time() - t0) / 60:.1f} min")
-    _log(f"restore from {repo_id} done in {(time.time() - t0) / 60:.1f} min")
+    """Restore cache shards and the baseline checkpoint from the HF dataset repo."""
+    restore_from_hf(VOL, repo_id, RESTORE_PATTERNS, volume.commit)
 
 
 @app.function(
@@ -449,16 +373,7 @@ def push_to_hf(repo_id: str = "") -> None:
         (ckpt_dir / name, f"checkpoints/dspark_block7_qwen3_4b_full_step_380/{name}")
         for name in ("model.safetensors", "config.json", "train_config.py")
     )
-    t0 = time.time()
-    for idx, (src, dst) in enumerate(jobs, 1):
-        size = src.stat().st_size
-        _log(f"[{idx}/{len(jobs)}] {dst} {size / 1e9:.1f} GB uploading")
-        f0 = time.time()
-        api.upload_file(
-            path_or_fileobj=str(src), path_in_repo=dst, repo_id=repo, repo_type="dataset"
-        )
-        _log(f"[{idx}/{len(jobs)}] {dst} done in {(time.time() - f0) / 60:.1f} min")
-    _log(f"ALL DONE in {(time.time() - t0) / 60:.1f} min -> https://huggingface.co/datasets/{repo}")
+    push_jobs_to_hf(repo, jobs, "dspark-proxy-run")
     volume.commit()
 
 
