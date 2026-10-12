@@ -1,0 +1,919 @@
+Surfing the Activation Wave:
+Analyzing the Information and Ge-
+ometry of LLM Hidden States for
+Speculative Decoding
+Raghavv Goel* , Sudhanshu Agrawal*ψ, Mukul Gagrani, Risheek Garrepalli, Mingu Lee
+Qualcomm AI Research and ψ Stanford University
+{raghgoel,rgarrepa,mgagrani,mingul}@qti.qualcomm.com, sudhagra@stanford.edu
+Abstract
+Decoder hidden states from different layers of large lan-
+guage models (LLMs) often encode complementary in-
+formation. However, existing speculative decoding meth-
+ods typically rely on a small set of target-model layers
+chosen using fixed, position-based heuristics. Selecting
+an optimal subset of layers is inherently a combinatorial
+problem, making exhaustive evaluation infeasible even
+for moderately deep models. In this work, we present a
+principled framework for multi-layer hidden-state selec-
+tion for speculative decoding based on two complemen-
+tary criteria: informativeness, measured through matrix-
+entropy analysis, and diversity, quantified using centered
+kernel alignment (CKA). We investigate layer-wise Shan-
+non entropy, aggregate entropy under hidden-state con-
+catenation, and pairwise CKA dynamics across depth,
+revealing distinct geometric and informational compart-
+ments within decoder representations. Motivated by
+these findings, we propose entropy and CKA-based layer
+selection algorithms that favor hidden-state sets that are
+both highly informative and minimally redundant. As
+part of this framework, we introduce token-entropy fil-
+tering, which removes hidden states associated with low
+predictive-entropy tokens, thereby improving the quality
+of layer-selection statistics. In EAGLE3-style specula-
+tive decoding, our selected sets outperform fixed base-
+line choices, including the default [2, N//2, N− 3] rule,
+while providing a clearer explanation of why some de-
+faults can remain competitive. Our results provide a prac-
+tical recipe for multi-layer hidden-state selection for spec-
+ulative decoding, insights into the geometry and informa-
+tion in LLM decoder states, and a foundation for extend-
+ing similar analysis to related applications.
+1 Introduction
+Hidden states in decoder-only LLMs capture the pro-
+gressive transformation of token representations through
+depth. While prior studies analyze individual layers
+through rank, sparsity, and entropy, modern inference
+pipelines increasingly use multiple target-model hidden
+states jointly. In speculative decoding methods such as
+EAGLE3, selected target-model layers are fused and pro-
+vided to the draft model. However, in practice these lay-
+ers are usually selected by simple fixed rules (e.g., po-
+sitional heuristics) rather than an explicit objective that
+balances informativeness and redundancy.
+This creates both a practical and scientific gap. Prac-
+tically, multi-layer selection is combinatorial. For a 36-
+layer model, choosing only three layers yields thousands
+of combinations, and the search space grows rapidly for
+larger tuples. Scientifically, it remains unclear which
+layer combinations are jointly informative versus geo-
+metrically redundant. As a result, default position-based
+heuristics (uniform selection with the initial and final lay-
+ers offset) may perform well in some regimes without
+providing a principled explanation of when or why they
+work.
+In this work, we view multi-layer hidden-state selec-
+tion through the lenses of information maximization and
+* Equal Contribution
+Qualcomm AI Research is an initiative of Qualcomm T echnologies, Inc.
+1
+arXiv:2610.12939v1  [cs.CL]  9 Oct 2026
+Figure 1: Prompt-wise per-layer Shannon entropy curves
+for Qwen3-4B-Instruct. The curves show a depth-
+wise non-uniform profile (an “activation wave”), with
+distinct early (0–6), middle (7–28), and late-layer (29–
+35) regimes.
+redundancy minimization. We use matrix entropy to
+quantify informativeness of layer sets and linear CKA
+to quantify representational redundancy. We first intro-
+duce Entropy-based Layer Set Iteration (ELSI), a practi-
+cal entropy-based procedure that scales to realistic model
+depths. ELSI uses beam search to eﬀiciently identify
+high-entropy layer sets by evaluating entropy on con-
+catenated hidden states across layers. We then intro-
+duce ELSI-C, an entropy-initialized CKA-transition ex-
+tension that promotes diversity-aware layer expansion.
+Alongside ELSI/ELSI-C, we introduce token-entropy fil-
+tering during calibration: hidden states of low predictive-
+entropy tokens are removed so that selection statistics fo-
+cus on significant and informative positions.
+We empirically study Qwen3-4B-Instruct-2507
+and Llama-3.1-8B-Instruct. Our analyses reveal
+consistent trends across both models: (i) a non-uniform
+per-layer Shannon entropy profile (an activation wave
+across depth, Fig. 1), (ii) non-uniform entropy gain under
+layer concatenation, and (iii) CKA transition boundaries
+that indicate depth-wise representational compartments.
+These observations motivate ELSI, an entropy-based se-
+lector, and ELSI-C, a diversity-aware extension. More-
+over, they clarify why fixed baselines can still be compet-
+itive when they overlap with high-scoring entropy-beam
+regions.
+Contributions.
+• We propose a principled framework for studying and
+selecting multiple target-model hidden layers using
+matrix entropy of concatenated representations and
+CKA transitions between depths.
+• We introduce ELSI, a practical entropy-based selec-
+tor that utilizes beam search to create informative
+layer sets.
+• We introduce ELSI-C, an entropy-initialized CKA-
+transition extension for diversity-aware expansion.
+• We introduce calibration token-entropy filtering,
+where hidden states of low predictive-entropy tokens
+are removed to sharpen layer-discriminative statis-
+tics.
+• We demonstrate practical gains for EAGLE3-style
+conditioning using ELSI/ELSI-C-selected sets rela-
+tive to the default[N−1] and [2, N//2, N−3] rules,
+while improving interpretability.
+2 Related Work
+Layer specialization and redundancy in transform-
+ers. Prior work shows that transformer layers are not
+uniformly useful and that representational redundancy is
+often concentrated in middle layers. Transformer layer-
+function studies report that many middle layers are par-
+tially interchangeable, while early and late layers re-
+main more functionally distinct [1]. Related pruning/ac-
+celeration work similarly finds that substantial middle-
+layer computation can be removed with limited quality
+loss [2]. Representation-geometry analyses also suggest
+structured evolution of hidden states across depth [3, 4].
+These studies motivate transition-aware reasoning: the
+depth axis can be divided into coherent compartments
+separated by sharp representational changes. To algorith-
+mically identify these compartments, we introduce CKA-
+transition diagnostics.
+Spectral and rank-based analyses. A complementary
+line of research studies rank and spectral structure for
+finetuning and compression. Adaptive rank-allocation
+methods for LoRA finetuning [5] demonstrate that rank
+requirements vary by layer/module and should not be
+treated uniformly [6, 7]. Other methods use low-rank
+approximations of transformer components for eﬀiciency
+[8]. Random-matrix and singular-value analyses further
+show that spectral tails and non-dominant directions can
+materially affect behavior [9]. However, these works pri-
+marily deal with over-parameterization and compression
+- they do not address the problem of selection of sets of
+activations.
+Speculative decoding and hidden-state conditioning.
+Recent speculative decoding frameworks such as EAGLE
+[10, 11] and DFlash [12] condition draft models on se-
+lected target-model hidden states. In current practice,
+those target layers are usually chosen by fixed, position-
+based heuristics (e.g., [N−1] or [2, N//2, N−3]) which
+2
+may lead to redundant representations. Our work ad-
+dresses this gap through ELSI, which maximizes infor-
+mation and diversity through matrix entropy and CKA-
+transition structure signals for principled multi-layer se-
+lection. We further introduce beam-overlap diagnostics
+to explain when and why position-based baseline rules
+still remain competitive.
+Positioning of this work. Relative to prior layer-
+analysis and rank-based compression literature, our con-
+tribution is to jointly optimize hidden-layer sets for down-
+stream draft conditioning: (i) quantify set informative-
+ness via entropy of fused representations with ELSI, (ii)
+control redundancy via CKA-transition-guided expan-
+sion with ELSI-C, and (iii) evaluate practical gains in
+EAGLE3-style speculative decoding with interpretable
+diagnostics.
+3 Preliminaries
+Let the target model in the speculative decoding pipeline
+have N transformer layers indexed by{0, . . . , N−1} and
+hidden dimension d. For a sequence of length T , let the
+hidden states output by layer-l be
+hl∈ RT ×d. (1)
+For any selected layer setL⊆{ 0, . . . , N− 1}, define the
+concatenated representation
+¯hL = concat({hl}l∈L, feature dim)∈ RT ×|L|d. (2)
+Following EAGLE3-style conditioning, fused states are
+down-projected as
+UL = ¯hLWdown, W down∈ R|L|d×d. (3)
+Thus, the set of statesL acts as a bottleneck, determining
+the information seen by the draft model.
+3.1 Matrix Entropy
+Following [13, 4, 14] for X∈ RT ×D, we define KX =
+XX ⊤ and the normalized spectrum
+pi(X) = λi(KX )tr(KX ) = σi(X)2∥X∥2F , (4)
+where σi(X) are the singular values. The Rényi-α matrix
+entropy is
+Sα(X) = 11− α log ∑i pi(X)α, α > 0, α ̸= 1.
+(5)
+The limit as α→ 1 is
+S1(X) = limα→1 Sα(X) =−
+∑
+i
+pi(X) log pi(X). (6)
+For a set of hidden states L, we consider the concate-
+nated representation ¯hL defined in Eq. (2) and compute
+the matrix entropy as Sα
+(¯hL). Notably, as compared to
+matrix-based joint entropy [13], this formulation of the
+entropy of a set of hidden states better represents the lin-
+ear combination of features in the EAGLE-3 style condi-
+tioning that we see in Equation (3). In our experiments we
+use S1 to study per-layer trends and select high entropy
+layers.
+3.2 Centered-Kernel Alignment (CKA)
+For representations X∈ RT ×Dx and Y ∈ RT ×Dy , we
+have Gram matrices K = XX ⊤ and L = Y Y ⊤, with
+the CKA defined as
+CKA(X, Y ) = ⟨HKH, HLH⟩F
+∥HKH∥F∥HLH∥F
+, H = I− 1T 11⊤.
+(7)
+Let Mij = CKA(hi, hj). We define CKA transition
+score at boundary between layers ℓ→ ℓ + 1 as
+δℓ =∥Mℓ+1,:− Mℓ,:∥2, ℓ = 0, . . . , N− 2. (8)
+Large peaks indicate compartment boundaries. The
+above equation can be extended for concatenated layers
+as well.
+4 Method
+We propose a three-stage layer-selection pipeline for
+speculative decoding: (i) token-entropy filtering within
+hidden states, (ii) hidden-state aggregation to build layer
+representatives, (iii.a) entropy-driven beam search for in-
+formative multi-layer sets (ELSI), and (iii.b) transition-
+aware CKA expansion for diversity-oriented refinement
+(ELSI-C). This section formalizes each stage and the
+evaluation protocol used in our experiments.
+4.1 Token-Entropy Filtering
+For token position t, predictive entropy is
+Ht =−
+∑
+v∈V
+pt(v) log pt(v). (9)
+We remove low-entropy hidden states within the sequence
+by top-fraction filtering
+Ω = TopFrac({Ht}Tt=1, ρ), ρ ∈ (0, 1]. (10)
+Hidden states restricted to retained positions are denoted
+h(Ω)l . In our experiments, we perform filtering with ρ =
+0.3.
+3
+4.2 Hidden State Collection and
+Block Averaging
+For each model and calibration prompt, we collect hidden
+states and apply token filtering ( h(Ω)l ). We then partition
+the token axis into non-overlapping blocks of sizeB = 32
+and average across blocks/samples to obtain layer repre-
+sentatives
+Zl∈ RB×d, l = 0, . . . , N− 1. (11)
+These{Zl} are used for entropy/CKA analyses and layer-
+set scoring. In our experiments, we use 200 calibration
+samples from ShareGPT [15].
+4.3 Matrix Entropy-based Expansion
+(ELSI)
+ELSI performs beam search with matrix entropy of con-
+catenated hidden states as the expansion criterion. We
+use Zl to denote the layer representatives from Eq. (11)
+and ¯ZL ≜ concat({Zl}l∈L, feature dim).
+ELSI is detailed in Algorithm 1 which begins with
+entropy-based singleton seeding ([S1]) and then performs
+beam expansion over set sizes ([S2]). At each depth, can-
+didates are deduplicated ([S3]) and pruned by entropy
+score ([S4]) before selecting the best size- m set ([S5]).
+Algorithm 1: ELSI: Entropy-based Layer Set Iteration
+Input: Layer representatives{Zl}N −1l=0 , target set size m
+Input: Beam hyperparameters (Kexpand, Kbeam)
+Output: Selected layer setL⋆ with|L⋆| = m
+[S1] initial beam: top-entropy singletons
+B1← arg top-Kbeaml∈{0,...,N −1} S1(Zl)
+[S2] entropy-driven expansion across depths
+for d∈{ 2, . . . , m} do
+# d = 2 forms pairs; d = 3 forms triples, etc.
+Cd← [ ]
+for eachL∈B d−1 do
+# top extension candidates
+E(L)← arg top-Kexpandl /∈L S1( ¯ZL∪{l})
+Cd←C d∪{L∪{ l} : l∈E (L)}
+end for
+[S3] deduplicate identical sets from different parents
+Cd← Dedup(Cd)
+[S4] beam prune by set entropy
+Bd← arg top-Kbeam L∈Cd S1( ¯ZL)
+end for
+[S5] final selection at target size m
+L⋆← arg maxL∈Bm S1( ¯ZL)
+returnL⋆
+A visualization of the beams produced by ELSI using
+Kbeam = 10 is shown in Supplementary Fig. S3.
+4.4 ELSI-C: Entropy-Initialized CKA
+Expansion
+ELSI-C reuses entropy initialization and entropy scoring,
+but restricts each expansion to a transition-aware candi-
+date pool from conditional CKA. Algorithm 2 first ini-
+tializes the beam using entropy ([C1]). For each beam
+member, it computes a transition score for each candi-
+date using CKA ([C2]). Candidate layers with the high-
+est transition scores are then kept for each beam ([C3]).
+Next, candidate expansions are aggregated with dedupli-
+cation and the beam is pruned based on entropy ([C4]).
+The final size- m set is selected as the top beam element
+([C5]).
+Algorithm 2: ELSI-C: Entropy-based Layer Set Iteration
+with CKA Filtering
+Input: Layer representatives{Zl}N −1l=0 , target set size m
+Input: Hyperparameters (Kbeam, Kpool)
+Output: Selected setL⋆ with|L⋆| = m
+[C1] initial beam: top-entropy singletons
+B1← arg top-Kbeaml S1(Zl)
+for d∈{ 2, . . . , m} do
+# d = 2 forms pairs; d = 3 forms triples, etc.
+Cd← [ ]
+for eachL∈B d−1 do
+# conditional CKA matrix
+ML(i, j)← CKA( ¯ZL∪{i}, ¯ZL∪{j})
+[C2] calculate transition scores for each candidate
+δL(r)←∥ ML(r, :)− ML(r− 1, :)∥2
+[C3] candidate layers with highest transition
+scores
+QL← arg top-Kpooll /∈L δL(l)
+Cd←C d∪{L∪{ l} : l∈Q L}
+end for
+[C4] deduplicate + beam prune with entropy
+Cd← Dedup(Cd)
+Bd← arg top-Kbeam L∈Cd S1( ¯ZL)
+end for
+[C5] final selection at target size m
+L⋆← arg maxL∈Bm S1( ¯ZL)
+returnL⋆
+5 Experiments
+We use open-source models from two different
+families: Qwen3-4B-Instruct-2507 [16] and
+Llama3.1-8B-Instruct [17] to analyze the per-layer
+entropy (section 5.1), concatenated entropy (section 5.2),
+and CKA transitions across layers (section 5.4). We
+additionally include the layer candidates selected using
+ELSI and ELSI-C for these models (section 5.5).
+4
+5.1 Per-layer matrix entropy
+We first analyze per-layer Shannon matrix entropy S1. In
+Figure 2, we see that across models, entropy varies sub-
+stantially with depth, indicating non-uniform layer infor-
+mativeness. Llama3.1-8B-IT shows high entropy for
+the first layer which then drops sharply and then rises,
+peaking around layer 27. Based on this we add another
+condition when selecting a single layer: in addition to
+having high-entropy, the layer index should occur after
+the middle layer index. Qwen3-4B-IT shows high-low-
+high entropy peaking at layer 28. While per-layer en-
+tropy can inform the selection of a single layer, it does
+not immediately reveal favorable sets of layers, motivat-
+ing deeper analysis.
+0 5 10 15 20 25 30 35
+Layer index
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8Shannon entropy (nats)
+Qwen3-4B-Instruct-2507
+Llama-3.1-8B-Instruct
+Figure 2: Per-layer Shannon entropy (S1) across depth for
+Qwen3-4B-Instruct-2507 and Llama-3.1-8B-Instruct.
+5.2 Entropy of layer pairs
+We next evaluate the entropy of concatenations of layer
+pairs. Figure 3 visualizes top- k seed layers (by per-layer
+entropy) against all companion layer concatenations. We
+see non-uniform gain patterns: some layer pairs provide
+strong complementary directions while others are largely
+redundant. Moreover, different seed layers benefit from
+different companion layers. These results justify the need
+to optimize sets of layers jointly and entropy of concate-
+nated representations as a metric to achieve this.
+5.3 Token-Entropy Filtering
+Across models, entropy varies substantially with depth
+and also across prompts as seen in Fig. 1 where the
+entropy variance across prompts is very high for ini-
+tial and final layers. This can result in a prompt de-
+pendent layer ordering which is infeasible as the set of
+layers selected remains fixed through training and infer-
+ence. We therefore use token filtering which reduces the
+cross-prompt entropy variance by 48.4% (early layers 0–
+6), 45.8% (middle layers 7–28), and 35.6% (late layers
+Method Qwen3-4B-Instruct Llama-3.1-8B-Instruct
+Layers selected Entropy Layers selected Entropy
+m=1
+EAGLE2 {L35} 0.044 {L31} 0.530
+ELSI {L28} 0.469 {L26} 0.718
+ELSI-C {L28} 0.469 {L26} 0.718
+m=2
+ELSI {L23, L35} 0.625 {L22, L31} 0.824
+ELSI-C {L25, L35} 0.588 {L25, L31} 0.797
+m=3
+EAGLE3 {L2, L18, L33} 0.441 {L2, L16, L29} 0.687
+ELSI {L5, L23, L35} 0.627 {L1, L22, L31} 0.910
+ELSI-C {L6, L28, L35} 0.593 {L1, L25, L31} 0.889
+Table 1: Layer selections and entropy for Qwen3-4B-
+Instruct and Llama-3.1-8B-Instruct, grouped by selection
+size m.
+29–35), while preserving the same depth-wise activation-
+wave profile (Fig. 4).
+5.4 CKA compartments and transi-
+tions
+Figure 5 shows pairwise CKA with transition bound-
+aries derived from Eq. 8 overlaid. The transition
+analysis reveals clear depth-wise representational com-
+partments. Qwen3-4B-IT has more transitions than
+Llama3.1-8B-IT, showing more variation as we go
+deeper into the network, with two large compartments in
+the middle. Llama3.1-8B-IT on the other hand has sim-
+ilar CKA throughout except for the first and last layers.
+From this perspective, EAGLE2-like methods which
+only used last layer hidden-states might miss out on other
+high information layers. EAGLE3 which selects layers
+following [2, N//2, N− 3] selects layers in different
+compartments, thus resulting in improved performance
+over EAGLE2, though it might still be sub-optimal by
+having overlapping information.
+5.5 Selection tables and baseline in-
+tuition
+We show in Table 1 the layers selected by ELSI and
+ELSI-C when choosing singletons, pairs, and triples of
+layers. We also show how the entropy of the layer sets
+selected by ELSI compares to the entropy of the layer
+choices of EAGLE2 and EAGLE3. We present this for
+both Qwen3-4B-IT and Llama3.1-8B-IT models and
+observe that layers selected using ELSI and ELSI-C al-
+ways have higher entropy than those selected naively in
+EAGLE2 and EAGLE3.
+5
+0 4 8 12 16 20 24 28 32
+Companion layer j
+L28
+L27
+L29
+L26
+L25
+L30
+L24
+L31
+L32
+L23 Seed layer i (top-10 by S1)
+0.25
+0.30
+0.35
+0.40
+0.45
+0.50
+S1([Hi | Hj]) (nats)
+(a) Qwen3-4B-Instruct-2507
+0 3 6 9 12 15 18 21 24 27 30
+Companion layer j
+L0
+L26
+L27
+L28
+L25
+L30
+L29
+L24
+L23
+L22 Seed layer i (top-10 by S1)
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+S1([Hi | Hj]) (nats) (b) Llama-3.1-8B-Instruct
+Figure 3: Entropy of layer pairs. Top- k layers by entropy are chosen as seeds and paired with the remaining layers
+S1({Hi, Hj}).
+Figure 4: Token-entropy filtered prompt-token set ( ρ =
+0.30) lowers the entropy variance across prompts while
+preserving the activation-wave shape.
+5.6 Impact on Speculative Decoding
+5.6.1 Baselines and Evaluation.
+We train EAGLE-style draft models using ELSI and
+ELSI-C and compare against layer selections based on:
+(i) EAGLE2 [N− 1], (ii) EAGLE3 [2, N//2, N− 3],
+and (iii) low-entropy negative sets.
+5.6.2 Training and Evaluation Setup.
+All the draft models were trained using a distillation
+dataset generated using ShareGPT [15] and Ultrachat
+[18] on 8 H100 GPUs. For evaluation we ablate over (a)
+number of draft tree nodes: 30 and 60, and (b) temper-
+ature sampling: T=0.0 (greedy) and T=1.0. We evaluate
+on SpecBench [19], which covers a wide range of tasks
+and report average accepted tokens ( τ ). Note that aver-
+age accepted tokens will directly lead to higher token per
+second in this scenario for same number of hidden-states
+chosen. For a smaller set of target states, we expect higher
+0 4 8 12 16 20 24 28 32
+Layer j
+0
+4
+8
+12
+16
+20
+24
+28
+32 Layer i
+0.2
+0.4
+0.6
+0.8
+1.0
+CKA(i, j)
+(a) Qwen3-4B-Instruct-2507
+0 4 8 12 16 20 24 28
+Layer j
+0
+4
+8
+12
+16
+20
+24
+28 Layer i
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+CKA(i, j)
+(b) Llama-3.1-8B-Instruct
+Figure 5: Pairwise CKA with calculated transition
+boundary overlaid in yellow.
+6
+throughput due to the usage of a smaller down-projection
+layer of size|L|d× d, though this might not be visible on
+GPUs which are not memory-bound. We leave it to fu-
+ture work to experiment with ELSI-generated layer sets
+on edge-devices.
+We show our main results forQwen3-4B-IT in Table 2
+and make several observations in this data:
+• ELSI ( m=3), matching the number of EAGLE3
+layers, is the best performing method on aver-
+age across all settings, improving over EAGLE3 by
+1.6–2.2% (+0.085 τ on average) and over EAGLE2
+by 6.1–7.3%.
+• Across all four settings, ELSI ( m=1) matches or
+exceeds EAGLE3 on average ( +0.01 to +0.04 τ ),
+showing that a single well-chosen layer matches
+EAGLE3’s default 3-layer heuristic.
+• ELSI tends to provide the most benefit in cate-
+gories where EAGLE3 performs weakest , for ex-
+ample Translation ( 2.6–5.6%) and Summarization
+(2.1–4.2%), but can also improve acceptance rate
+significantly in performant categories such as STEM
+(2.4–3.9%).
+• ELSI provides consistent benefits across sam-
+pling temperatures and draft tree sizes configu-
+rations, and thus may be applied to diverse deploy-
+ment scenarios.
+We also include a low-entropy control experiment
+wherein we choose the layer set with the lowest entropy
+resulting in layers {0, 1, 35}). We train an EAGLE-3
+model with this configuration and see that it consistently
+results in the lowest acceptance rate. This shows that us-
+ing low entropy hidden-states (which could have overlap-
+ping information) doesn’t provide a strong conditioning
+to the draft model.
+Table 3 reports the acceptance rate for
+Llama3.1-8B-IT. We show a subset of SpecBench
+categories (CODING, QA, ROLEPLAY , WRITING,
+M/R), and report the average (A VG) across all categories.
+Entropy-guided selection remains highly eﬀicient on this
+model: ELSI ( m=1) exceeds EAGLE2 by 2.8–4.9%
+while attaining∼99.0% of EAGLE3’s block eﬀiciency
+using a single hidden state rather than three. How-
+ever, increasing the number of selected layers yields no
+further gain, with A VG varying by only 0.017 τ across
+m = 1 , 2, 3. On average, ELSI ( m=3) trails EAGLE3
+by 1.0%. However, at T =1.0, ELSI ( m=3) improves
+over EAGLE3 on Roleplay by 4.7–5.9% and on Coding
+by 3.0–3.3%, whereas at T =0.0 the two are closer. The
+corresponding losses on Writing at T =1.0 leave the
+average unchanged.
+We attribute the reduced headroom overall to the
+greater interchangeability of Llama’s decoder layers, vis-
+ible as broad regions of high pairwise CKA in Figure 5.
+When neighboring layers encode similar information, the
+choice of layers matters correspondingly less, and a uni-
+formly spaced selection already performs well. Framing
+layer selection through ELSI thus allows us to identify
+these differing regimes across models: where represen-
+tations are diverse, selection results in significant bene-
+fits, and where they are redundant, it instead allows for a
+smaller layer-set selection.
+6 Conclusion
+We studied multi-layer hidden-state selection for spec-
+ulative decoding through the lens of information max-
+imization and geometric diversity, moving beyond
+fixed, positional heuristics. Our analysis of de-
+coder representations across Qwen3-4B-Instruct and
+Llama-3.1-8B-Instruct revealed consistent struc-
+tural signals: a non-uniform entropy profile across lay-
+ers (the activation wave), non-uniform entropy gains
+with layer concatenation, and CKA transition boundaries
+that indicate distinct representational compartments. To-
+gether, these observations motivate joint selection of
+layer sets to maximize information and minimize redun-
+dancy, instead of relying on hand-crafted layer indices.
+Building on these signals, we introduced ELSI and ELSI-
+C as practical algorithms to select layer combinations for
+typical model sizes. We further enhanced these algo-
+rithms by introducing token-entropy filtering to reduce
+cross-prompt entropy variance, improving the stability
+of selection statistics. Empirically, we demonstrate (i)
+choice of layers matters more than the number of lay-
+ers, and (ii) layer selection can result in sets that out-
+perform EAGLE2 and EAGLE3 baselines. We further
+provide analysis of why currently used layer combina-
+tions do perform well in practice, thus enhancing the in-
+terpretability of current speculative decoding techniques.
+Overall, this work provides a practical and interpretable
+framework for multi-layer hidden-state selection in spec-
+ulative decoding. This framework is designed to be gen-
+eral, with the potential for future work that experiments
+with a broader variety of target models and draft-model
+conditioning strategies. Further, the selection of sets of
+layers may find application in a broader range of tasks
+beyond speculative decoding including embedding tasks
+and interpretability, and we encourage these as future di-
+rections for exploration.
+References
+[1] Qi Sun, Marc Pickett, Aakash Kumar Nain, and
+Llion Jones. Transformer layers as painters. In Pro-
+7
+Method Nodes T CODING EXTR. HUMAN. QA RAG ROLE. STEM SUMM. TRANSL. WRITING M/R A VG
+EAGLE2
+30 0.0
+4.73 4.21 3.69 3.90 3.94 3.67 3.98 3.38 3.39 3.95 4.91 4.00
+ELSI (m=1) 4.83 4.79 3.80 3.97 4.17 3.63 4.14 3.56 3.85 4.06 5.21 4.24
+ELSI (m=2) 4.90 4.61 3.86 4.05 4.20 3.75 4.22 3.58 3.83 4.17 5.26 4.28
+ELSI-C (m=2) 4.93 4.77 3.82 4.07 4.18 3.76 4.22 3.59 3.76 4.19 5.20 4.26
+Low-Entropy 4.74 4.41 3.71 3.90 4.03 3.63 4.07 3.38 3.42 4.00 4.96 4.04
+EAGLE3 4.88 4.75 3.79 4.02 4.13 3.73 4.14 3.52 3.60 4.07 5.18 4.20
+ELSI (m=3) 4.90 4.80 3.87 4.08 4.20 3.86 4.30 3.61 3.80 4.22 5.25 4.29
+ELSI-C (m=3) 4.92 4.70 3.85 4.05 4.15 3.76 4.19 3.56 3.71 4.16 5.22 4.24
+EAGLE2
+30 1.0
+4.51 4.41 3.37 3.59 3.76 3.44 3.91 3.26 3.35 3.52 4.85 3.86
+ELSI (m=1) 4.55 5.03 3.48 3.60 3.98 3.31 3.95 3.41 3.81 3.63 5.06 4.06
+ELSI (m=2) 4.68 4.88 3.51 3.72 4.02 3.44 4.04 3.45 3.79 3.75 5.13 4.11
+ELSI-C (m=2) 4.68 4.82 3.49 3.74 3.97 3.42 3.94 3.47 3.74 3.70 5.13 4.09
+Low-Entropy 4.50 4.56 3.39 3.66 3.86 3.31 3.87 3.26 3.37 3.62 4.84 3.89
+EAGLE3 4.52 4.81 3.42 3.65 3.96 3.37 3.93 3.38 3.59 3.62 5.10 4.02
+ELSI (m=3) 4.67 4.96 3.50 3.74 4.01 3.34 4.06 3.45 3.74 3.91 5.17 4.11
+ELSI-C (m=3) 4.48 4.85 3.50 3.74 4.00 3.50 3.89 3.44 3.71 3.70 5.11 4.08
+EAGLE2
+60 0.0
+5.03 4.54 4.04 4.19 4.22 3.89 4.36 3.61 3.57 4.27 5.23 4.28
+ELSI (m=1) 5.17 4.97 4.07 4.26 4.45 4.01 4.40 3.81 4.02 4.37 5.49 4.50
+ELSI (m=2) 5.23 4.85 4.17 4.37 4.48 4.21 4.49 3.82 3.97 4.52 5.56 4.55
+ELSI-C (m=2) 5.23 4.94 4.18 4.37 4.43 4.04 4.55 3.83 3.96 4.48 5.54 4.54
+Low-Entropy 5.09 4.65 3.98 4.25 4.30 4.01 4.39 3.64 3.59 4.25 5.28 4.33
+EAGLE3 5.16 4.91 4.13 4.32 4.42 4.10 4.50 3.79 3.83 4.38 5.46 4.48
+ELSI (m=3) 5.23 4.91 4.15 4.40 4.49 4.18 4.61 3.87 4.02 4.51 5.54 4.57
+ELSI-C (m=3) 5.19 4.91 4.14 4.32 4.46 4.16 4.49 3.83 3.92 4.47 5.52 4.52
+EAGLE2
+60 1.0
+4.71 4.76 3.70 3.87 4.04 3.57 4.17 3.48 3.54 3.73 5.16 4.12
+ELSI (m=1) 4.81 5.04 3.74 3.95 4.16 3.72 4.31 3.63 3.98 3.79 5.41 4.31
+ELSI (m=2) 4.88 5.03 3.81 3.99 4.23 3.78 4.30 3.69 3.93 3.94 5.49 4.36
+ELSI-C (m=2) 4.95 5.07 3.73 4.05 4.24 3.52 4.35 3.69 4.01 3.98 5.43 4.36
+Low-Entropy 4.84 4.57 3.66 3.85 4.10 3.62 4.17 3.51 3.54 3.87 5.22 4.14
+EAGLE3 5.03 5.01 3.71 3.99 4.25 3.63 4.23 3.58 3.83 3.88 5.38 4.30
+ELSI (m=3) 5.00 5.04 3.77 4.06 4.28 3.64 4.37 3.73 3.93 4.03 5.43 4.37
+ELSI-C (m=3) 4.85 5.06 3.72 4.02 4.26 3.78 4.25 3.69 3.90 3.90 5.39 4.33
+Table 2: Mean accepted tokens per forward pass, τ , on SpecBench for Qwen3-4B-Instruct-2507, across draft-tree size
+(Nodes) and sampling temperature ( T ). Evaluation is performed with EAGLE2, EAGLE3, and ELSI and ELSI-C
+with layer-set sizes m = 1 , 2, 3. Low-Entropy is a negative control using layers {0, 1, 35}. M/R merges the math,
+reasoning, and math_reasoning categories, and A VGis the sample-weighted mean over all categories. Bold marks the
+best value per block.
+8
+Method Nodes T CODE QA ROLE. WRIT. M/R A VG
+EAGLE2
+30 0.0
+5.36 4.09 4.15 4.41 4.89 4.40
+ELSI (m=1) 5.51 4.19 4.25 4.54 5.15 4.58
+ELSI (m=2) 5.51 4.22 4.26 4.57 5.14 4.58
+ELSI-C (m=2) 5.49 4.19 4.13 4.54 5.08 4.53
+EAGLE3 5.54 4.24 4.25 4.62 5.22 4.64
+ELSI (m=3) 5.55 4.22 4.30 4.62 5.14 4.59
+ELSI-C (m=3) 5.47 4.15 4.24 4.51 5.10 4.52
+EAGLE2
+30 1.0
+4.59 3.24 3.06 3.36 4.01 3.64
+ELSI (m=1) 4.53 3.27 3.47 3.76 4.34 3.82
+ELSI (m=2) 4.65 3.20 3.38 3.82 4.32 3.81
+ELSI-C (m=2) 4.77 3.29 3.22 3.79 4.32 3.81
+EAGLE3 4.67 3.32 3.21 3.89 4.44 3.88
+ELSI (m=3) 4.81 3.43 3.36 3.72 4.33 3.86
+ELSI-C (m=3) 4.68 3.21 3.20 3.79 4.35 3.77
+EAGLE2
+60 0.0
+5.58 4.36 4.48 4.61 5.24 4.66
+ELSI (m=1) 5.73 4.42 4.57 4.85 5.47 4.84
+ELSI (m=2) 5.70 4.49 4.54 4.84 5.42 4.83
+ELSI-C (m=2) 5.67 4.44 4.46 4.81 5.42 4.79
+EAGLE3 5.75 4.51 4.60 4.88 5.51 4.89
+ELSI (m=3) 5.75 4.47 4.59 4.85 5.45 4.84
+ELSI-C (m=3) 5.66 4.39 4.52 4.80 5.37 4.78
+EAGLE2
+60 1.0
+4.72 3.48 3.57 4.06 4.41 3.95
+ELSI (m=1) 5.16 3.40 3.64 3.74 4.66 4.06
+ELSI (m=2) 4.55 3.64 3.69 3.86 4.60 4.06
+ELSI-C (m=2) 5.05 3.43 3.69 4.02 4.62 4.06
+EAGLE3 4.91 3.67 3.56 3.87 4.59 4.12
+ELSI (m=3) 5.07 3.65 3.77 3.72 4.54 4.06
+ELSI-C (m=3) 4.94 3.60 3.48 3.93 4.71 4.05
+Table 3: Mean accepted tokens per forward pass, τ , on
+SpecBench for Llama-3.1-8B-Instruct, across draft-tree
+size (Nodes) and sampling temperature ( T ). A subset
+of categories is shown for space. A VGis the sample-
+weighted mean over all SpecBench categories. M/R
+merges the math, reasoning, and math_reasoning cate-
+gories. Bold marks the best value per block.
+ceedings of the AAAI Conference on Artificial Intel-
+ligence, volume 39, pages 25219–25227, 2025.
+[2] Xin Men, Mingyu Xu, Qingyu Zhang, Bingning
+Wang, Hongyu Lin, Y aojie Lu, Xianpei Han, and
+Weipeng Chen. Shortgpt: Layers in large language
+models are more redundant than you expect. arXiv
+preprint arXiv:2403.03853, 2024.
+[3] Lucrezia Valeriani, Diego Doimo, Francesca Cu-
+turello, Alessandro Laio, Alessio Ansuini, and Al-
+berto Cazzaniga. The geometry of hidden represen-
+tations of large transformer models. Advances in
+Neural Information Processing Systems, 36:51234–
+51252, 2023.
+[4] Oscar Skean, Md Rifat Arefin, Dan Zhao,
+Niket Nikul Patel, Jalal Naghiyev, Y ann Lecun, and
+Ravid Shwartz-Ziv. Layer by layer: Uncovering
+hidden representations in language models. In
+International Conference on Machine Learning ,
+pages 55854–55875. PMLR, 2025.
+[5] Edward J Hu, Y elong Shen, Phillip Wallis, Zeyuan
+Allen-Zhu, Yuanzhi Li, Shean Wang, Liang Wang,
+Weizhu Chen, et al. Lora: Low-rank adaptation of
+large language models. Iclr, 1(2):3, 2022.
+[6] Qingru Zhang, Minshuo Chen, Alexander
+Bukharin, Nikos Karampatziakis, Pengcheng He,
+Yu Cheng, Weizhu Chen, and Tuo Zhao. Adalora:
+Adaptive budget allocation for parameter-eﬀicient
+fine-tuning. arXiv preprint arXiv:2303.10512 ,
+2023.
+[7] Vishnuprasadh Kumaravelu, Sunil Gupta, and
+PK Srijith. Post-optimization adaptive rank allo-
+cation for lora. arXiv preprint arXiv:2604.27796 ,
+2026.
+[8] A El Ichi and K Jbilou. Low-rank tensor approx-
+imation of weights in large language models via
+cosine lanczos bidiagonalization. arXiv preprint
+arXiv:2601.17112, 2026.
+[9] Max Staats, Matthias Thamm, and Bernd Rosenow.
+Small singular values matter: A random matrix
+analysis of transformer models. Advances in Neu-
+ral Information Processing Systems , 38:153545–
+153573, 2026.
+[10] Yuhui Li, Fangyun Wei, Chao Zhang, and
+Hongyang Zhang. Eagle-2: Faster inference of
+language models with dynamic draft trees. In
+Proceedings of the 2024 conference on empirical
+methods in natural language processing , pages
+7421–7432, 2024.
+9
+[11] Yuhui Li, Fangyun Wei, Chao Zhang, and
+Hongyang Zhang. Eagle-3: Scaling up infer-
+ence acceleration of large language models via
+training-time test. Advances in Neural Information
+Processing Systems, 38:136737–136756, 2026.
+[12] Jian Chen, Y esheng Liang, and Zhijian Liu. Dflash:
+Block diffusion for flash speculative decoding.
+arXiv preprint arXiv:2602.06036, 2026.
+[13] Oscar Skean, Jhoan Keider Hoyos Osorio, Austin J
+Brockmeier, and Luis Gonzalo Sanchez Giraldo.
+Dime: Maximizing mutual information by a dif-
+ference of matrix-based entropies. arXiv preprint
+arXiv:2301.08164, 2023.
+[14] Luis Gonzalo Sanchez Giraldo, Murali Rao, and
+Jose C Principe. Measures of entropy from data us-
+ing infinitely divisible kernels. IEEE Transactions
+on Information Theory , 61(1):535–548, 2014.
+[15] ShareGPT Community. Sharegpt: A dataset of con-
+versational data scraped from chatgpt shared links,
+2023.
+[16] An Y ang, Anfeng Li, Baosong Y ang, Beichen
+Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang
+Gao, Chengen Huang, Chenxu Lv, et al. Qwen3
+technical report. arXiv preprint arXiv:2505.09388,
+2025.
+[17] Aaron Grattafiori, Abhimanyu Dubey, Abhinav
+Jauhri, Abhinav Pandey, Abhishek Kadian, Ah-
+mad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan
+Schelten, Alex Vaughan, et al. The llama 3 herd of
+models. arXiv preprint arXiv:2407.21783, 2024.
+[18] Ning Ding, Yulin Chen, Bianfang Xu, Yujia Qin,
+Zonghan Zheng, Shengding Hu, Zhiyuan Liu,
+Maosong Sun, and Bowen Zhou. Enhancing
+chat language models by scaling high-quality in-
+structional conversations. In Proceedings of the
+2023 Conference on Empirical Methods in Natural
+Language Processing (EMNLP), pages 3000–3015,
+2023.
+[19] Heming Xia, Zhe Y ang, Qingxiu Dong, Peiyi Wang,
+Y ongqi Li, Tao Ge, Tianyu Liu, Wenjie Li, and Zhi-
+fang Sui. Unlocking eﬀiciency in large language
+model inference: A comprehensive survey of spec-
+ulative decoding. In Lun-Wei Ku, Andre Martins,
+and Vivek Srikumar, editors, Findings of the As-
+sociation for Computational Linguistics ACL 2024 ,
+pages 7655–7671, Bangkok, Thailand and virtual
+meeting, August 2024. Association for Computa-
+tional Linguistics.
+A Transition boundary com-
+parison with and without
+token filtering
+To isolate the effect of token filtering on representational
+compartment boundaries, we compare default and token-
+filtered CKA transition plots side by side for both models.
+B ELSI Beam Analysis
+We show the entire beam tree using ELSI, expanding
+based on high joint entropy of hidden-states post token-
+filtering in Fig 7. The top-1 at each depth of the beam
+are layers picked for best single, pair, and triple layers
+respectively.
+10
+0 4 8 12 16 20 24 28 32
+Layer j
+0
+4
+8
+12
+16
+20
+24
+28
+32 Layer i
+0.2
+0.4
+0.6
+0.8
+1.0
+CKA(i, j)
+(a) Qwen3-4B, default tokens
+0 4 8 12 16 20 24 28 32
+Layer j
+0
+4
+8
+12
+16
+20
+24
+28
+32 Layer i
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+CKA(i, j) (b) Qwen3-4B, token-filter (ρ = 0.30)
+0 4 8 12 16 20 24 28
+Layer j
+0
+4
+8
+12
+16
+20
+24
+28 Layer i
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+CKA(i, j)
+(c) Llama-3.1-8B, default tokens
+0 4 8 12 16 20 24 28
+Layer j
+0
+4
+8
+12
+16
+20
+24
+28 Layer i
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+CKA(i, j) (d) Llama-3.1-8B, token-filter ( ρ = 0.30)
+Figure 6: With and without token-filter CKA transition comparison. Y ellow dashed lines mark selected transition
+boundaries under matched detector settings.
+11
+Figure 7: Top-M entropy beam frontier for Qwen3-4B-IT
+12
