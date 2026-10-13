@@ -49,6 +49,7 @@ def _load(path: Path) -> ModuleType:
 
 merge_slices = _load(EXPERIMENT_DIR / "scripts/data/merge_cache_slices.py")
 cache_script = _load(EXPERIMENT_DIR / "scripts/data/prepare_target_cache_glm.py")
+regen_script = _load(EXPERIMENT_DIR / "scripts/data/generate_train_data_glm.py")
 
 TARGET_LAYERS = [1, 12, 23, 34, 42, 43, 44]
 HIDDEN = 8
@@ -239,3 +240,39 @@ def test_resolve_sample_range_validation() -> None:
     for bad in ((5, 2, 10), (0, 11, 10), (-1, 5, 10)):
         with pytest.raises(ValueError, match="invalid sample range"):
             resolve(*bad)
+
+
+def test_regen_resume_state_is_index_keyed(tmp_path: Path) -> None:
+    """Committed input indices are the resume state, from both output streams."""
+    output = tmp_path / "regen.jsonl"
+    error = tmp_path / "regen_error.jsonl"
+    output.write_text(
+        '{"id": 1, "input_index": 3}\n{"id": 2, "input_index": 7}\n', encoding="utf-8"
+    )
+    error.write_text('{"status": "error", "input_index": 5}\n', encoding="utf-8")
+    done = regen_script.collect_done_indices(str(output), str(error))
+    assert done == {3, 5, 7}
+
+
+def test_regen_resume_ignores_legacy_and_unparsable_rows(tmp_path: Path) -> None:
+    """Rows without input_index (pre-fix runs) contribute nothing to the state."""
+    output = tmp_path / "regen.jsonl"
+    output.write_text('{"id": 1}\nnot json\n{"input_index": 9}\n', encoding="utf-8")
+    done = regen_script.collect_done_indices(str(output), str(tmp_path / "absent.jsonl"))
+    assert done == {9}
+
+
+def test_regen_truncates_a_partial_trailing_line(tmp_path: Path) -> None:
+    """A killed write mid-line is dropped; complete files are untouched."""
+    partial = tmp_path / "partial.jsonl"
+    partial.write_bytes(b'{"input_index": 1}\n{"input_in')
+    regen_script.truncate_partial_line(str(partial))
+    assert partial.read_bytes() == b'{"input_index": 1}\n'
+
+    clean = tmp_path / "clean.jsonl"
+    clean.write_bytes(b'{"input_index": 1}\n')
+    regen_script.truncate_partial_line(str(clean))
+    assert clean.read_bytes() == b'{"input_index": 1}\n'
+
+    absent = tmp_path / "absent.jsonl"
+    regen_script.truncate_partial_line(str(absent))  # no-op, no crash

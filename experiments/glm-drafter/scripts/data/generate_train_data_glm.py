@@ -196,13 +196,73 @@ def count_lines(path, *, required=False):
         return sum(1 for _ in handle)
 
 
-def find_resume_offset(output_path, error_path):
-    """Return (skip, success, error) counts for resume mode."""
-    if not os.path.exists(output_path):
-        return 0, 0, 0
-    success_count = count_lines(output_path)
-    error_count = count_lines(error_path)
-    return success_count + error_count, success_count, error_count
+def truncate_partial_line(path):
+    """Drop a trailing write that a killed container may have left mid-line.
+
+    A complete row always ends with a newline; a committed file that does
+    not was cut mid-write, and appending after it would glue rows together.
+    """
+    if not os.path.exists(path):
+        return
+    with open(path, "rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        size = handle.tell()
+        if size == 0:
+            return
+        handle.seek(-1, os.SEEK_END)
+        if handle.read(1) == b"\n":
+            return
+    with open(path, "rb") as handle:
+        data = handle.read()
+    with open(path, "wb") as handle:
+        handle.write(data[: data.rfind(b"\n") + 1])
+    print(f"Truncated a partial trailing line in {path}", flush=True)
+
+
+def collect_done_indices(output_path, error_path):
+    """Input row indices already processed, read from committed rows.
+
+    Results are written in completion order, not input order, and a kill
+    commits an arbitrary subset of them — so a line count is not a resume
+    cursor (the #44 regen drill measured 37 duplicate rows from that
+    assumption). Each row carries ``input_index``; the set of committed
+    indices is the exact resume state.
+    """
+    done = set()
+    for path in (output_path, error_path):
+        if not os.path.exists(path):
+            continue
+        with open(path, encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    print(f"Skipping unparsable line in {path} during resume scan", flush=True)
+                    continue
+                index = row.get("input_index")
+                if isinstance(index, int) and index >= 0:
+                    done.add(index)
+    return done
+
+
+def resolve_resume_state(args, error_path):
+    """Compute the already-done input indices and the output open mode."""
+    if not args.resume:
+        return set(), "w"
+    truncate_partial_line(args.output_file_path)
+    truncate_partial_line(error_path)
+    done_indices = collect_done_indices(args.output_file_path, error_path)
+    if done_indices:
+        print(
+            f"Resume mode: {len(done_indices)} input rows already processed "
+            f"({count_lines(args.output_file_path)} output lines, "
+            f"{count_lines(error_path)} error lines)",
+            flush=True,
+        )
+    return done_indices, "a"
 
 
 def validate_server(args, server_address, probe):
@@ -322,23 +382,6 @@ def wait_for_queue_slot(
             time.sleep(0.05)
 
 
-def resolve_resume_state(args, total_lines, error_path):
-    """Compute skip counts and the output open mode for resume mode."""
-    if not args.resume:
-        return 0, "w"
-    skip_lines, existing_success, existing_errors = find_resume_offset(
-        args.output_file_path, error_path
-    )
-    if skip_lines >= total_lines:
-        print(f"All {total_lines} samples are already processed.")
-        return skip_lines, None
-    if skip_lines > 0:
-        print(
-            f"Resume mode: {existing_success} success, {existing_errors} errors, skip {skip_lines}"
-        )
-    return skip_lines, "a"
-
-
 def report_stats(stats):
     """Print the final success/error counts and context-length stats."""
     print("Processing completed.")
@@ -359,9 +402,8 @@ def main():
 
     total_lines = count_lines(args.input_file_path, required=True)
     error_path = args.output_file_path.replace(".jsonl", "_error.jsonl")
-    skip_lines, file_mode = resolve_resume_state(args, total_lines, error_path)
-    if file_mode is None:
-        return
+    done_indices, file_mode = resolve_resume_state(args, error_path)
+    done_count = len(done_indices)
 
     valid_servers = validate_servers(args)
     stats = {
@@ -381,20 +423,21 @@ def main():
         open(error_path, file_mode, encoding="utf-8") as error_handle,
         ThreadPoolExecutor(max_workers=args.concurrency * len(valid_servers)) as executor,
     ):
-        for _ in range(skip_lines):
-            next(input_handle, None)
-
         progress_total = (
             total_lines
             if args.num_samples is None
-            else min(total_lines, skip_lines + args.num_samples)
+            else min(total_lines, done_count + args.num_samples)
         )
-        progress = tqdm(total=progress_total, initial=skip_lines, desc="Processing")
-        for line in input_handle:
+        progress = tqdm(total=progress_total, initial=done_count, desc="Processing")
+        for row_index, line in enumerate(input_handle):
             if args.num_samples is not None and submitted_count >= args.num_samples:
                 break
 
+            if row_index in done_indices:
+                continue
+
             sample = json.loads(line)
+            sample["input_index"] = row_index
             server_address = valid_servers[next_server_index]
             next_server_index = (next_server_index + 1) % len(valid_servers)
 
