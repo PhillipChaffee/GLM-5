@@ -271,6 +271,25 @@ def split(sample_size: int = 20000, seed: int = 42) -> None:
     volume.commit()
 
 
+def _regen_server_cmd() -> list[str]:
+    """The single sglang serving recipe every regen run shares (issue 39 ramp)."""
+    return [
+        "python",
+        "-m",
+        "sglang.launch_server",
+        "--model-path",
+        TARGET,
+        "--tp-size",
+        "4",
+        "--port",
+        "30000",
+        "--context-length",
+        "12288",
+        "--mem-fraction-static",
+        "0.85",
+    ]
+
+
 @app.function(
     image=regen_image,
     gpu=TRAIN_GPU,
@@ -282,21 +301,7 @@ def split(sample_size: int = 20000, seed: int = 42) -> None:
 def regen(sample_size: int = 700, concurrency: int = 64, max_tokens: int = 4096) -> None:
     """Serve the target with sglang (TP4) and regenerate training data through it."""
     elapsed = serve_and_run_client(
-        server_cmd=[
-            "python",
-            "-m",
-            "sglang.launch_server",
-            "--model-path",
-            TARGET,
-            "--tp-size",
-            "4",
-            "--port",
-            "30000",
-            "--context-length",
-            "12288",
-            "--mem-fraction-static",
-            "0.85",
-        ],
+        server_cmd=_regen_server_cmd(),
         health_url="http://127.0.0.1:30000/health",
         health_deadline_s=60 * 60,
         server_name="sglang",
@@ -322,6 +327,155 @@ def regen(sample_size: int = 700, concurrency: int = 64, max_tokens: int = 4096)
     )
     volume.commit()
     _log(f"regen done in {elapsed / 60:.1f} min")
+
+
+@app.function(
+    image=regen_image,
+    gpu=TRAIN_GPU,
+    timeout=24 * 3600,
+    volumes={VOL: volume},
+    env={"HOME": HOME, "HF_HUB_CACHE": f"{HOME}/.cache/huggingface"},
+    secrets=[hf_secret],
+)
+def regen_ramp(sample_size: int = 256, arms: str = "64,128,256,512") -> None:
+    """Serve the target once and ramp regen concurrency over identical row windows (issue 39)."""
+    ramp_arms = [arm.strip() for arm in arms.split(",") if arm.strip()]
+    arm_blocks = []
+    for arm in ramp_arms:
+        output_path = f"{VOL}/data/ramp/c{arm}.jsonl"
+        arm_blocks.append(
+            f'echo "@@@ RAMP BEGIN c={arm}"\n'
+            f"if ! python /work/scripts/data/generate_train_data_glm.py "
+            f"--model {TARGET} --server-address 127.0.0.1:30000 "
+            f"--concurrency {arm} --max-tokens 4096 --num-samples {sample_size} "
+            f"--input-file-path {VOL}/data/perfectblend_train.jsonl "
+            f'--output-file-path {output_path}; then echo "@@@ RAMP FAIL c={arm}"; fi\n'
+            f'echo "@@@ RAMP END c={arm}"\n'
+        )
+    client_cmd = [
+        "bash",
+        "-lc",
+        f"mkdir -p {VOL}/data/ramp\n" + "\n".join(arm_blocks) + 'echo "@@@ RAMP DONE"',
+    ]
+    elapsed = serve_and_run_client(
+        server_cmd=_regen_server_cmd(),
+        health_url="http://127.0.0.1:30000/health",
+        health_deadline_s=60 * 60,
+        server_name="sglang",
+        client_cmd=client_cmd,
+    )
+    volume.commit()
+    _log(f"regen-ramp done in {elapsed / 60:.1f} min")
+
+
+MIN_AUDIT_ROWS = 2
+
+
+def _assist_turn_tokens(
+    content: str,
+    tokenizer: Any,  # noqa: ANN401 - AutoTokenizer instance, strict-only sanctuary shape
+    think_open_id: int,
+    think_close_id: int,
+) -> tuple[int, int]:
+    """Count full and think-stripped tokens for one stored assistant turn."""
+    token_ids = tokenizer(content, add_special_tokens=False)["input_ids"]
+    visible_count = 0
+    inside_think = False
+    for token_id in token_ids:
+        if token_id == think_open_id:
+            inside_think = True
+        elif token_id == think_close_id:
+            inside_think = False
+        elif not inside_think:
+            visible_count += 1
+    return len(token_ids), visible_count
+
+
+def _audit_corpus(
+    corpus: Path,
+    tokenizer: Any,  # noqa: ANN401 - AutoTokenizer instance, strict-only sanctuary shape
+    think_open_id: int,
+    think_close_id: int,
+) -> tuple[list[int], list[int], list[int]] | None:
+    """Token-stats one regen corpus; None when it is missing or too small to quantify."""
+    import json
+
+    if not corpus.exists():
+        _log(f"audit: {corpus.relative_to(VOL)} missing")
+        return None
+    row_full: list[int] = []
+    row_visible: list[int] = []
+    row_turns: list[int] = []
+    with corpus.open(encoding="utf-8") as handle:
+        for line in handle:
+            sample = json.loads(line)
+            turns_full = turns_visible = turn_count = 0
+            for message in sample.get("conversations", []):
+                content = message.get("content")
+                if message.get("role") != "assistant" or not isinstance(content, str):
+                    continue
+                full, visible = _assist_turn_tokens(
+                    content, tokenizer, think_open_id, think_close_id
+                )
+                turn_count += 1
+                turns_full += full
+                turns_visible += visible
+            if turn_count:
+                row_full.append(turns_full)
+                row_visible.append(turns_visible)
+                row_turns.append(turn_count)
+    if len(row_full) < MIN_AUDIT_ROWS:
+        _log(f"audit: {corpus.relative_to(VOL)} has fewer than {MIN_AUDIT_ROWS} usable rows")
+        return None
+    return row_full, row_visible, row_turns
+
+
+@app.function(
+    image=regen_image,
+    timeout=3600,
+    cpu=8,
+    memory=32768,
+    volumes={VOL: volume},
+    env={"HOME": HOME, "HF_HUB_CACHE": f"{HOME}/.cache/huggingface"},
+    secrets=[hf_secret],
+)
+def regen_audit() -> None:
+    """Retokenize stored regen corpora to pin what the smoke's token counts measured (issue 39)."""
+    import statistics
+
+    from transformers import AutoTokenizer
+
+    think_open_id = 154841
+    think_close_id = 154842
+    tokenizer = AutoTokenizer.from_pretrained(TARGET)
+    ramp_corpus = sorted((Path(VOL) / "data/ramp").glob("c*.jsonl"))
+    corpora = [Path(VOL) / "data/regen.jsonl"] + [c for c in ramp_corpus if "_error" not in c.stem]
+
+    def _quantiles(seq: list[int]) -> tuple[int, int, int]:
+        """Return p50, p90, p99 of a token-count sequence."""
+        marks = statistics.quantiles(seq, n=100)
+        return int(marks[49]), int(marks[89]), int(marks[98])
+
+    for corpus in corpora:
+        audit = _audit_corpus(corpus, tokenizer, think_open_id, think_close_id)
+        if audit is None:
+            continue
+        row_full, row_visible, row_turns = audit
+        p50, p90, p99 = _quantiles(row_full)
+        visible_p50, visible_p90, visible_p99 = _quantiles(row_visible)
+        label = corpus.relative_to(VOL)
+        turns_per_row = statistics.mean(row_turns)
+        _log(f"audit: {label} rows={len(row_full)} turns/row={turns_per_row:.2f}")
+        _log(
+            f"audit: full tok/row mean={statistics.mean(row_full):.0f} "
+            f"p50={p50} p90={p90} p99={p99}"
+        )
+        _log(
+            f"audit: visible tok/row mean={statistics.mean(row_visible):.0f} "
+            f"p50={visible_p50} p90={visible_p90} p99={visible_p99}"
+        )
+        ratio = statistics.mean(row_full) / max(1, statistics.mean(row_visible))
+        _log(f"audit: full/visible ratio={ratio:.2f}")
 
 
 @app.function(
@@ -607,9 +761,11 @@ def restore_hf(repo_id: str = HF_ASSET_REPO) -> None:
     secrets=[hf_secret],
     cpu=8,
 )
-def push_to_hf(repo_id: str = "", exp_name: str = "") -> None:
-    """Upload the cache, regen data, and final checkpoint to an HF dataset repo."""
-    push_jobs_to_hf(repo_id, build_push_jobs(VOL, exp_name), "glm-drafter-run")
+def push_to_hf(repo_id: str = "", exp_name: str = "", *, include_cache: bool = False) -> None:
+    """Upload regen data + final checkpoint to an HF dataset repo (cache opt-in)."""
+    push_jobs_to_hf(
+        repo_id, build_push_jobs(VOL, exp_name, include_cache=include_cache), "glm-drafter-run"
+    )
     volume.commit()
 
 
@@ -631,12 +787,17 @@ def _build_dispatch(
     confidence_threshold: float,
     baseline: bool,
     repo_id: str,
+    include_cache: bool,
+    ramp_sample_size: int,
+    ramp_arms: str,
 ) -> dict[str, tuple[Any, dict[str, Any]]]:
     """Map every stage name to its function and flag-derived parameters."""
     return {
         "probe": (probe, {}),
         "split": (split, {"sample_size": sample_size, "seed": seed}),
         "regen": (regen, {"sample_size": sample_size, "concurrency": concurrency}),
+        "regen-ramp": (regen_ramp, {"sample_size": ramp_sample_size, "arms": ramp_arms}),
+        "regen-audit": (regen_audit, {}),
         "cache": (cache, {"local_batch_size": cache_batch_size}),
         "train": (
             train,
@@ -685,7 +846,10 @@ def _build_dispatch(
         "peek": (peek, {}),
         "fetch": (fetch_result, {"name": tag}),
         "restore-hf": (restore_hf, {"repo_id": repo_id} if repo_id else {}),
-        "push-hf": (push_to_hf, {"repo_id": repo_id, "exp_name": exp_name}),
+        "push-hf": (
+            push_to_hf,
+            {"repo_id": repo_id, "exp_name": exp_name, "include_cache": include_cache},
+        ),
     }
 
 
@@ -709,6 +873,9 @@ def main(
     confidence_threshold: float = 0.0,
     baseline: bool = False,
     repo_id: str = "",
+    include_cache: bool = False,
+    ramp_sample_size: int = 256,
+    ramp_arms: str = "64,128,256,512",
     foreground: bool = False,
 ) -> None:
     """Dispatch one pipeline stage; every flag maps to a stage parameter."""
@@ -729,6 +896,9 @@ def main(
         confidence_threshold=confidence_threshold,
         baseline=baseline,
         repo_id=repo_id,
+        include_cache=include_cache,
+        ramp_sample_size=ramp_sample_size,
+        ramp_arms=ramp_arms,
     )
     fn, kwargs = dispatch[stage]
     if foreground:

@@ -48,22 +48,28 @@ def test_checkpoint_resolves_for_a_renamed_experiment(tmp_path: Path) -> None:
     }
 
 
-def test_cache_and_data_upload_alongside_the_checkpoint(tmp_path: Path) -> None:
-    """The cache shards and regen data stay in the upload list next to the checkpoint."""
+def test_cache_upload_is_opt_in_and_data_defaults_in(tmp_path: Path) -> None:
+    """Default uploads corpus + checkpoint (#22 durable artifacts); no cache."""
     _seed_volume(tmp_path, "glm_drafter_block7_glm53flash_full")
     jobs = build_push_jobs(str(tmp_path), "glm_drafter_block7_glm53flash_full")
     assert {(src.name, dst) for src, dst in jobs if not dst.startswith("checkpoints/")} == {
-        ("shard-0000.tar", "cache/shard-0000.tar"),
         ("corpus.jsonl", "data/corpus.jsonl"),
     }
 
 
+def test_explicit_flag_uploads_the_cache_arm(tmp_path: Path) -> None:
+    """include_cache=True restores the legacy behavior for cache-durable pipelines."""
+    _seed_volume(tmp_path, "glm_drafter_block7_glm53flash_full")
+    jobs = build_push_jobs(str(tmp_path), "glm_drafter_block7_glm53flash_full", include_cache=True)
+    assert ("shard-0000.tar", "cache/shard-0000.tar") in {(src.name, dst) for src, dst in jobs}
+
+
 def test_unset_experiment_name_skips_the_checkpoint_arm(tmp_path: Path) -> None:
-    """No exp_name: cache and data still upload, no checkpoint jobs appear."""
+    """No exp_name: data still uploads (cache opt-in), no checkpoint jobs appear."""
     _seed_volume(tmp_path, "glm_drafter_block7_glm53flash_full")
     jobs = build_push_jobs(str(tmp_path))
-    assert all(not dst.startswith("checkpoints/") for _, dst in jobs)
-    assert len(jobs) == 2
+    assert not any(dst.startswith(("checkpoints/", "cache/")) for _, dst in jobs)
+    assert len(jobs) == 1
 
 
 def test_wrong_experiment_name_skips_the_checkpoint_arm(tmp_path: Path) -> None:
@@ -71,3 +77,4 @@ def test_wrong_experiment_name_skips_the_checkpoint_arm(tmp_path: Path) -> None:
     _seed_volume(tmp_path, "glm_drafter_block7_glm53flash_full")
     jobs = build_push_jobs(str(tmp_path), "glm_drafter_block7_glm53flash_fuller")
     assert all(not dst.startswith("checkpoints/") for _, dst in jobs)
+    assert ("corpus.jsonl", "data/corpus.jsonl") in {(src.name, dst) for src, dst in jobs}
