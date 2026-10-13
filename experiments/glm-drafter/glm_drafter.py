@@ -371,6 +371,26 @@ def regen_ramp(sample_size: int = 256, arms: str = "64,128,256,512") -> None:
 MIN_AUDIT_ROWS = 2
 
 
+def _assist_turn_tokens(
+    content: str,
+    tokenizer: Any,  # noqa: ANN401 - AutoTokenizer instance, strict-only sanctuary shape
+    think_open_id: int,
+    think_close_id: int,
+) -> tuple[int, int]:
+    """Count full and think-stripped tokens for one stored assistant turn."""
+    token_ids = tokenizer(content, add_special_tokens=False)["input_ids"]
+    visible_count = 0
+    inside_think = False
+    for token_id in token_ids:
+        if token_id == think_open_id:
+            inside_think = True
+        elif token_id == think_close_id:
+            inside_think = False
+        elif not inside_think:
+            visible_count += 1
+    return len(token_ids), visible_count
+
+
 def _audit_corpus(
     corpus: Path,
     tokenizer: Any,  # noqa: ANN401 - AutoTokenizer instance, strict-only sanctuary shape
@@ -394,19 +414,12 @@ def _audit_corpus(
                 content = message.get("content")
                 if message.get("role") != "assistant" or not isinstance(content, str):
                     continue
-                token_ids = tokenizer(content, add_special_tokens=False)["input_ids"]
-                visible_count = 0
-                inside_think = False
-                for token_id in token_ids:
-                    if token_id == think_open_id:
-                        inside_think = True
-                    elif token_id == think_close_id:
-                        inside_think = False
-                    elif not inside_think:
-                        visible_count += 1
+                full, visible = _assist_turn_tokens(
+                    content, tokenizer, think_open_id, think_close_id
+                )
                 turn_count += 1
-                turns_full += len(token_ids)
-                turns_visible += visible_count
+                turns_full += full
+                turns_visible += visible
             if turn_count:
                 row_full.append(turns_full)
                 row_visible.append(turns_visible)
