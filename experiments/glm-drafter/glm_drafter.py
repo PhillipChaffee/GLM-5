@@ -11,7 +11,9 @@ active. The volume carries data, caches, checkpoints, and results.
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -41,11 +43,16 @@ from lib.modal_pipeline import (
     build_eval_cmd,
     build_push_jobs,
     build_train_cmd,
+    count_jsonl_lines,
     fetch_result_bytes,
+    heal_latest_checkpoint,
     inspect_volume,
     push_jobs_to_hf,
     restore_from_hf,
     serve_and_run_client,
+    slice_cache_complete,
+    spawn_checkpoint_committer,
+    write_slice_plan,
 )
 from lib.modal_pipeline import (
     log as _log,
@@ -298,7 +305,12 @@ def _regen_server_cmd() -> list[str]:
     env={"HOME": HOME, "HF_HUB_CACHE": f"{HOME}/.cache/huggingface"},
     secrets=[hf_secret],
 )
-def regen(sample_size: int = 700, concurrency: int = 64, max_tokens: int = 4096) -> None:
+def regen(
+    sample_size: int = 700,
+    concurrency: int = 64,
+    max_tokens: int = 4096,
+    output_name: str = "regen",
+) -> None:
     """Serve the target with sglang (TP4) and regenerate training data through it."""
     elapsed = serve_and_run_client(
         server_cmd=_regen_server_cmd(),
@@ -322,7 +334,7 @@ def regen(sample_size: int = 700, concurrency: int = 64, max_tokens: int = 4096)
             "--input-file-path",
             f"{VOL}/data/perfectblend_train.jsonl",
             "--output-file-path",
-            f"{VOL}/data/regen.jsonl",
+            f"{VOL}/data/{output_name}.jsonl",
         ],
     )
     volume.commit()
@@ -481,7 +493,7 @@ def regen_audit() -> None:
 @app.function(
     image=deepspec_image,
     gpu=TRAIN_GPU,
-    timeout=12 * 3600,
+    timeout=24 * 3600,
     volumes={VOL: volume},
     env={
         "HOME": HOME,
@@ -494,25 +506,72 @@ def regen_audit() -> None:
 def cache(
     local_batch_size: int = 2,
     cache_token_budget: int | None = None,
+    slice_rows: int = 5000,
+    cache_root: str = f"{VOL}/cache",
     train_data_path: str = "",
 ) -> None:
-    """Build the target hidden-state cache in a single process with device_map=auto.
+    """Build the target hidden-state cache as resumable slices (issue #44).
 
-    ``cache_token_budget`` enables serving-style token-budget admission
-    (length-sorted, whole-conversation packs) with ``local_batch_size`` as
-    the conversation-count cap; unset keeps the proven fixed batch 2.
+    One container death loses at most one slice: each completed slice is
+    committed to the volume immediately, and a re-invocation skips slices
+    whose canonical manifest validates. Run ``--stage cache-merge`` when
+    every slice is complete. ``cache_token_budget`` (#57) enables
+    serving-style admission within each slice (length-sorted,
+    whole-conversation packs with ``local_batch_size`` as the count cap);
     ``train_data_path`` overrides the default regen corpus (budget-probe
     sweeps run on a small head, not the full corpus).
     """
+    merged_manifest = Path(cache_root) / "manifest.json"
+    if merged_manifest.exists():
+        msg = (
+            f"{merged_manifest} already exists: the merged cache was built. "
+            "Delete the cache root to rebuild from scratch."
+        )
+        raise RuntimeError(msg)
+    data_path = train_data_path or f"{VOL}/data/regen.jsonl"
+    total_rows = count_jsonl_lines(data_path)
+    slices = write_slice_plan(cache_root, total_rows, slice_rows)
+    _log(f"cache: {len(slices)} slices over {total_rows} rows (slice_rows={slice_rows})")
+    for start, end in slices:
+        slice_dir = f"{cache_root}/slice_{start:09d}"
+        if slice_cache_complete(slice_dir):
+            _log(f"cache: slice [{start}, {end}) complete, skipping")
+            continue
+        # a crashed slice run leaves a partial dir the stock script would refuse
+        shutil.rmtree(slice_dir, ignore_errors=True)
+        _log(f"cache: building slice [{start}, {end})")
+        _run(
+            build_cache_cmd(
+                config="config/dspark/glm5_flash.py",
+                cache_script="scripts/data/prepare_target_cache_glm.py",
+                train_data_path=data_path,
+                output_dir=slice_dir,
+                local_batch_size=local_batch_size,
+                cache_token_budget=cache_token_budget,
+                sample_start=start,
+                sample_end=end,
+            ),
+            cwd=DEEPSPEC_DIR,
+        )
+        volume.commit()
+    _log(f"cache: all {len(slices)} slices complete; next: --stage cache-merge")
+
+
+@app.function(
+    image=deepspec_image,
+    timeout=6 * 3600,
+    volumes={VOL: volume},
+    env={"PYTHONPATH": DEEPSPEC_DIR},
+)
+def cache_merge(cache_root: str = f"{VOL}/cache") -> None:
+    """Fold completed cache slices into one canonical DeepSpec cache dir (CPU only)."""
     _run(
-        build_cache_cmd(
-            config="config/dspark/glm5_flash.py",
-            cache_script="scripts/data/prepare_target_cache_glm.py",
-            train_data_path=train_data_path or f"{VOL}/data/regen.jsonl",
-            output_dir=f"{VOL}/cache",
-            local_batch_size=local_batch_size,
-            cache_token_budget=cache_token_budget,
-        ),
+        [
+            "python",
+            "scripts/data/merge_cache_slices.py",
+            "--cache-root",
+            cache_root,
+        ],
         cwd=DEEPSPEC_DIR,
     )
     volume.commit()
@@ -538,23 +597,44 @@ def train(
     head_type: str = "vanilla",
     max_steps: int = 0,
     *,
+    cache_path: str = "/vol/cache",
     torch_compile: bool | None = None,
+    checkpointing_steps: int | None = None,
 ) -> None:
     """Train the block-7 GLM drafter with DeepSpec on the cached states."""
-    _run(
-        build_train_cmd(
-            config="config/dspark/glm5_flash.py",
-            exp_name=exp_name,
-            epochs=epochs,
-            local_batch_size=local_batch_size,
-            head_type=head_type,
-            cache_path="/vol/cache",
-            max_steps=max_steps,
-            torch_compile=torch_compile,
-        ),
-        cwd=DEEPSPEC_DIR,
+    checkpoint_root = Path(HOME) / "checkpoints/deepspec" / exp_name
+    healed = heal_latest_checkpoint(checkpoint_root)
+    if healed:
+        _log(f"train: {healed}")
+        volume.commit()
+    commit_lock = threading.Lock()
+
+    def guarded_commit() -> None:
+        with commit_lock:
+            volume.commit()
+
+    watcher, stop = spawn_checkpoint_committer(
+        checkpoint_root=checkpoint_root, commit=guarded_commit
     )
-    volume.commit()
+    try:
+        _run(
+            build_train_cmd(
+                config="config/dspark/glm5_flash.py",
+                exp_name=exp_name,
+                epochs=epochs,
+                local_batch_size=local_batch_size,
+                head_type=head_type,
+                cache_path=cache_path,
+                max_steps=max_steps,
+                torch_compile=torch_compile,
+                checkpointing_steps=checkpointing_steps,
+            ),
+            cwd=DEEPSPEC_DIR,
+        )
+    finally:
+        stop.set()
+        watcher.join(timeout=60)
+        guarded_commit()
 
 
 @app.function(
@@ -575,6 +655,9 @@ def train_smoke(
     local_batch_size: int = 4,
     head_type: str = "vanilla",
     max_steps: int = 0,
+    *,
+    cache_path: str = "/vol/cache",
+    checkpointing_steps: int | None = None,
 ) -> None:
     """Run a short local training pass to smoke-test the pipeline."""
     train.local(
@@ -583,6 +666,8 @@ def train_smoke(
         local_batch_size=local_batch_size,
         head_type=head_type,
         max_steps=max_steps,
+        cache_path=cache_path,
+        checkpointing_steps=checkpointing_steps,
     )
 
 
@@ -789,6 +874,11 @@ def _build_dispatch(
     exp_name: str,
     epochs: int,
     cache_batch_size: int,
+    slice_rows: int,
+    cache_root: str,
+    cache_path: str,
+    checkpointing_steps: int | None,
+    output_name: str,
     local_batch_size: int,
     head_type: str,
     max_steps: int,
@@ -809,7 +899,14 @@ def _build_dispatch(
     return {
         "probe": (probe, {}),
         "split": (split, {"sample_size": sample_size, "seed": seed}),
-        "regen": (regen, {"sample_size": sample_size, "concurrency": concurrency}),
+        "regen": (
+            regen,
+            {
+                "sample_size": sample_size,
+                "concurrency": concurrency,
+                "output_name": output_name,
+            },
+        ),
         "regen-ramp": (regen_ramp, {"sample_size": ramp_sample_size, "arms": ramp_arms}),
         "regen-audit": (regen_audit, {}),
         "cache": (
@@ -818,8 +915,11 @@ def _build_dispatch(
                 "local_batch_size": cache_batch_size,
                 "cache_token_budget": cache_token_budget,
                 "train_data_path": cache_data_path,
+                "slice_rows": slice_rows,
+                "cache_root": cache_root,
             },
         ),
+        "cache-merge": (cache_merge, {"cache_root": cache_root}),
         "train": (
             train,
             {
@@ -828,6 +928,8 @@ def _build_dispatch(
                 "local_batch_size": local_batch_size,
                 "head_type": head_type,
                 "max_steps": max_steps,
+                "cache_path": cache_path,
+                "checkpointing_steps": checkpointing_steps,
             },
         ),
         "train-smoke": (
@@ -838,6 +940,8 @@ def _build_dispatch(
                 "local_batch_size": local_batch_size,
                 "head_type": head_type,
                 "max_steps": max_steps,
+                "cache_path": cache_path,
+                "checkpointing_steps": checkpointing_steps,
             },
         ),
         "train-sweep": (train_sweep, {"max_steps": max_steps}),
@@ -884,6 +988,11 @@ def main(
     exp_name: str = "glm_drafter_block7_glm53flash",
     epochs: int = 10,
     cache_batch_size: int = 2,
+    slice_rows: int = 5000,
+    cache_root: str = "/vol/cache",
+    cache_path: str = "/vol/cache",
+    checkpointing_steps: int | None = None,
+    output_name: str = "regen",
     local_batch_size: int = 4,
     head_type: str = "vanilla",
     max_steps: int = 0,
@@ -909,6 +1018,11 @@ def main(
         exp_name=exp_name,
         epochs=epochs,
         cache_batch_size=cache_batch_size,
+        slice_rows=slice_rows,
+        cache_root=cache_root,
+        cache_path=cache_path,
+        checkpointing_steps=checkpointing_steps,
+        output_name=output_name,
         local_batch_size=local_batch_size,
         head_type=head_type,
         max_steps=max_steps,

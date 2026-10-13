@@ -7,9 +7,14 @@ place; each app keeps its own stage decorators, constants, and dispatch.
 
 from __future__ import annotations
 
+import json
+import re
+import struct
 import subprocess
 import sys
+import threading
 import time
+import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -161,6 +166,8 @@ def build_cache_cmd(
     local_batch_size: int,
     cache_script: str,
     cache_token_budget: int | None = None,
+    sample_start: int | None = None,
+    sample_end: int | None = None,
 ) -> list[str]:
     """Build the target-cache command shared by the pipeline apps.
 
@@ -168,7 +175,13 @@ def build_cache_cmd(
     into serving-style admission control (length-sorted, whole-conversation
     packs bounded by the token budget with ``local_batch_size`` as the
     count cap); unset leaves the proven batch-2 floor untouched.
+    ``sample_start``/``sample_end`` bound the build to rows ``[start, end)``
+    of the training jsonl (the resumable slice build); both must be given
+    together or both omitted.
     """
+    if (sample_start is None) != (sample_end is None):
+        msg = "sample_start and sample_end must be given together"
+        raise ValueError(msg)
     command = [
         "python",
         cache_script,
@@ -186,7 +199,84 @@ def build_cache_cmd(
             "--cache-token-budget",
             str(cache_token_budget),
         ]
+    if sample_start is not None:
+        command += [
+            "--sample-start",
+            str(sample_start),
+            "--sample-end",
+            str(sample_end),
+        ]
     return command
+
+
+def count_jsonl_lines(path: str) -> int:
+    """Count lines of a jsonl file (the slice plan's row total)."""
+    with Path(path).open("rb") as handle:
+        return sum(1 for _ in handle)
+
+
+def plan_cache_slices(total_rows: int, slice_rows: int) -> list[tuple[int, int]]:
+    """Split ``total_rows`` into contiguous ``[start, end)`` slice ranges."""
+    if total_rows < 0:
+        msg = f"total_rows must be non-negative, got {total_rows}"
+        raise ValueError(msg)
+    if slice_rows <= 0:
+        msg = f"slice_rows must be positive, got {slice_rows}"
+        raise ValueError(msg)
+    return [
+        (start, min(start + slice_rows, total_rows)) for start in range(0, total_rows, slice_rows)
+    ]
+
+
+def slice_cache_complete(cache_dir: str) -> bool:
+    """A slice dir is complete iff its canonical manifest loads and validates.
+
+    Runs only where the deepspec package is importable (the deepspec image
+    and the experiment test env); elsewhere the ImportError propagates —
+    the caller must not treat an uncheckable slice as complete.
+    """
+    from deepspec.data.target_cache_dataset import load_target_cache_manifest
+
+    try:
+        load_target_cache_manifest(cache_dir)
+    except Exception:  # noqa: BLE001 - any invalid state means "not complete"
+        return False
+    return True
+
+
+SLICE_PLAN_FILE_NAME = "slice_plan.json"
+
+
+def write_slice_plan(cache_root: str, total_rows: int, slice_rows: int) -> list[tuple[int, int]]:
+    """Write the cache root's slice plan atomically and return it.
+
+    The plan freezes the row set the merged cache will cover: a later run
+    with a different ``slice_rows`` or a grown ``total_rows`` fails loudly
+    instead of silently overlapping already-built slices.
+    """
+    slices = plan_cache_slices(total_rows, slice_rows)
+    plan = {
+        "total_rows": total_rows,
+        "slice_rows": slice_rows,
+        "slices": [list(bounds) for bounds in slices],
+    }
+    plan_path = Path(cache_root) / SLICE_PLAN_FILE_NAME
+    if plan_path.exists():
+        existing: dict[str, object] = json.loads(plan_path.read_text(encoding="utf-8"))
+        if existing != plan:
+            msg = (
+                f"existing slice plan at {plan_path} covers total_rows="
+                f"{existing.get('total_rows')} with slice_rows={existing.get('slice_rows')}; "
+                f"refusing to re-plan with total_rows={total_rows}, slice_rows={slice_rows} — "
+                f"pass --slice-rows {existing.get('slice_rows')} or delete the cache root"
+            )
+            raise RuntimeError(msg)
+        return slices
+    Path(cache_root).mkdir(parents=True, exist_ok=True)
+    tmp_path = Path(f"{plan_path}.tmp")
+    tmp_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+    tmp_path.replace(plan_path)
+    return slices
 
 
 def build_train_cmd(
@@ -199,6 +289,7 @@ def build_train_cmd(
     cache_path: str,
     max_steps: int,
     torch_compile: bool | None = None,
+    checkpointing_steps: int | None = None,
     train_script: str = "train.py",
 ) -> list[str]:
     """Build the drafter-training command shared by the pipeline apps."""
@@ -220,6 +311,8 @@ def build_train_cmd(
     ]
     if torch_compile is not None:
         cmd.extend(["--opts", f"train.torch_compile={torch_compile}"])
+    if checkpointing_steps is not None:
+        cmd.extend(["--opts", f"logging.checkpointing_steps={checkpointing_steps}"])
     if max_steps:
         cmd.extend(["--opts", f"train.max_train_steps={max_steps}"])
     return cmd
@@ -333,3 +426,121 @@ def push_jobs_to_hf(
         )
         log(f"[{idx}/{len(jobs)}] {dst} done in {(time.time() - f0) / 60:.1f} min")
     log(f"ALL DONE in {(time.time() - t0) / 60:.1f} min -> https://huggingface.co/datasets/{repo}")
+
+
+STEP_DIR_PATTERN = re.compile(r"^step_(\d+)$")
+STEP_LATEST_NAME = "step_latest"
+
+
+def os_symlink(target: Path, link: Path) -> None:
+    """Create ``link -> target``, replacing a stale non-link path if present."""
+    if link.exists() and not link.is_symlink():
+        link.unlink()
+    link.symlink_to(target)
+
+
+def checkpoint_dir_is_intact(step_dir: Path) -> bool:
+    """Structurally validate a step dir's checkpoint files.
+
+    A kill mid-save can commit a truncated ``.pt`` (zip without its trailing
+    central directory — the drill-D load failure) or a truncated
+    ``model.safetensors``; both must be rejected before a resume points at
+    the dir. Checks only layout, not content: the central directory read for
+    zip files, the 8-byte header length for safetensors.
+    """
+    for path in sorted(step_dir.iterdir()):
+        if path.name.endswith(".pt") and path.is_file():
+            try:
+                with zipfile.ZipFile(path) as archive:
+                    archive.namelist()
+            except (OSError, zipfile.BadZipFile):
+                return False
+        elif path.name == "model.safetensors" and path.is_file():
+            try:
+                with path.open("rb") as handle:
+                    (header_len,) = struct.unpack("<Q", handle.read(8))
+            except (OSError, struct.error):
+                return False
+            if 8 + header_len >= path.stat().st_size:
+                return False
+    return True
+
+
+def heal_latest_checkpoint(checkpoint_root: Path) -> str | None:
+    """Point a missing ``step_latest`` at the newest intact step dir.
+
+    A killed container lost the symlink while its checkpoint files survived
+    (measured twice in the #44 drills); recovery would otherwise restart the
+    train from scratch. Step dirs left truncated by a mid-save kill are
+    skipped newest-first; an existing link or a checkpoint-less root is a
+    no-op.
+    """
+    if not checkpoint_root.is_dir():
+        return None
+    steps = sorted(
+        (int(match.group(1)), item)
+        for item in checkpoint_root.iterdir()
+        if item.is_dir() and (match := STEP_DIR_PATTERN.match(item.name))
+    )
+    link = checkpoint_root / STEP_LATEST_NAME
+    if link.is_symlink():
+        return None
+    skipped: list[str] = []
+    for _step_number, step_dir in reversed(steps):
+        if checkpoint_dir_is_intact(step_dir):
+            target = step_dir.resolve()
+            os_symlink(target, link)
+            note = f"restored {link} -> {target} after an earlier kill left it missing"
+            if skipped:
+                note += f" (intact check skipped truncated dirs: {skipped})"
+            return note
+        skipped.append(step_dir.name)
+    return None
+
+
+def _step_state(checkpoint_root: Path) -> tuple[int, str] | None:
+    """(newest step number, step_latest target) as seen on disk."""
+    if not checkpoint_root.is_dir():
+        return None
+    steps = [
+        int(match.group(1))
+        for item in checkpoint_root.iterdir()
+        if item.is_dir() and (match := STEP_DIR_PATTERN.match(item.name))
+    ]
+    try:
+        latest = str((checkpoint_root / STEP_LATEST_NAME).readlink())
+    except OSError:
+        latest = ""
+    if not steps and not latest:
+        return None
+    return max(steps, default=0), latest
+
+
+def spawn_checkpoint_committer(
+    *,
+    checkpoint_root: Path,
+    commit: Callable[[], None],
+    poll_seconds: float = 15.0,
+) -> tuple[threading.Thread, threading.Event]:
+    """Commit the volume each time the trainer publishes a new checkpoint.
+
+    Background commits carried the checkpoint files after a kill but not the
+    step_latest symlink (the #44 drill finding), so the stage commits
+    explicitly as DeepSpec's checkpoint state advances. The watcher watches
+    the newest ``step_N`` directory and the ``step_latest`` target; nothing
+    dirty happens between saves, so commits stay off the training critical
+    path. The caller stops via the returned event and joins the thread.
+    """
+    stop_event = threading.Event()
+
+    def watch() -> None:
+        local_seen: tuple[int, str] | None = None
+        while not stop_event.wait(poll_seconds):
+            state = _step_state(checkpoint_root)
+            if state is not None and state != local_seen:
+                commit()
+                local_seen = state
+
+    watcher = threading.Thread(target=watch, name="train-checkpoint-committer", daemon=True)
+    watcher.start()
+    return watcher, stop_event
