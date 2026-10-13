@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib.util
 import shutil
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -43,12 +44,14 @@ from lib.modal_pipeline import (
     build_push_jobs,
     build_train_cmd,
     count_jsonl_lines,
+    ensure_step_latest_link,
     fetch_result_bytes,
     inspect_volume,
     push_jobs_to_hf,
     restore_from_hf,
     serve_and_run_client,
     slice_cache_complete,
+    spawn_checkpoint_committer,
     write_slice_plan,
 )
 from lib.modal_pipeline import (
@@ -437,21 +440,39 @@ def train(
     checkpointing_steps: int | None = None,
 ) -> None:
     """Train the block-7 GLM drafter with DeepSpec on the cached states."""
-    _run(
-        build_train_cmd(
-            config="config/dspark/glm5_flash.py",
-            exp_name=exp_name,
-            epochs=epochs,
-            local_batch_size=local_batch_size,
-            head_type=head_type,
-            cache_path=cache_path,
-            max_steps=max_steps,
-            torch_compile=torch_compile,
-            checkpointing_steps=checkpointing_steps,
-        ),
-        cwd=DEEPSPEC_DIR,
+    checkpoint_root = Path(HOME) / "checkpoints/deepspec" / exp_name
+    healed = ensure_step_latest_link(checkpoint_root)
+    if healed:
+        _log(f"train: {healed}")
+        volume.commit()
+    commit_lock = threading.Lock()
+
+    def guarded_commit() -> None:
+        with commit_lock:
+            volume.commit()
+
+    watcher, stop = spawn_checkpoint_committer(
+        checkpoint_root=checkpoint_root, commit=guarded_commit
     )
-    volume.commit()
+    try:
+        _run(
+            build_train_cmd(
+                config="config/dspark/glm5_flash.py",
+                exp_name=exp_name,
+                epochs=epochs,
+                local_batch_size=local_batch_size,
+                head_type=head_type,
+                cache_path=cache_path,
+                max_steps=max_steps,
+                torch_compile=torch_compile,
+                checkpointing_steps=checkpointing_steps,
+            ),
+            cwd=DEEPSPEC_DIR,
+        )
+    finally:
+        stop.set()
+        watcher.join(timeout=60)
+        guarded_commit()
 
 
 @app.function(

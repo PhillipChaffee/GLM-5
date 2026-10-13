@@ -8,8 +8,10 @@ place; each app keeps its own stage decorators, constants, and dispatch.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -394,3 +396,86 @@ def push_jobs_to_hf(
         )
         log(f"[{idx}/{len(jobs)}] {dst} done in {(time.time() - f0) / 60:.1f} min")
     log(f"ALL DONE in {(time.time() - t0) / 60:.1f} min -> https://huggingface.co/datasets/{repo}")
+
+
+STEP_DIR_PATTERN = re.compile(r"^step_(\d+)$")
+STEP_LATEST_NAME = "step_latest"
+
+
+def ensure_step_latest_link(checkpoint_root: Path) -> str | None:
+    """Point a missing ``step_latest`` at the newest step dir; return a note.
+
+    A killed container lost the symlink while its checkpoint files survived
+    (measured twice in the #44 drills); recovery would otherwise restart the
+    train from scratch. An existing link is left untouched.
+    """
+    if not checkpoint_root.is_dir():
+        return None
+    steps = sorted(
+        (int(match.group(1)), item)
+        for item in checkpoint_root.iterdir()
+        if item.is_dir() and (match := STEP_DIR_PATTERN.match(item.name))
+    )
+    link = checkpoint_root / STEP_LATEST_NAME
+    if link.is_symlink():
+        return None
+    if not steps:
+        return None
+    target = steps[-1][1].resolve()
+    os_symlink(target, link)
+    return f"restored {link} -> {target} after an earlier kill left it missing"
+
+
+def os_symlink(target: Path, link: Path) -> None:
+    """Create ``link -> target``, replacing a stale non-link path if present."""
+    if link.exists() and not link.is_symlink():
+        link.unlink()
+    link.symlink_to(target)
+
+
+def _step_state(checkpoint_root: Path) -> tuple[int, str] | None:
+    """(newest step number, step_latest target) as seen on disk."""
+    if not checkpoint_root.is_dir():
+        return None
+    steps = [
+        int(match.group(1))
+        for item in checkpoint_root.iterdir()
+        if item.is_dir() and (match := STEP_DIR_PATTERN.match(item.name))
+    ]
+    try:
+        latest = str((checkpoint_root / STEP_LATEST_NAME).readlink())
+    except OSError:
+        latest = ""
+    if not steps and not latest:
+        return None
+    return max(steps, default=0), latest
+
+
+def spawn_checkpoint_committer(
+    *,
+    checkpoint_root: Path,
+    commit: Callable[[], None],
+    poll_seconds: float = 15.0,
+) -> tuple[threading.Thread, threading.Event]:
+    """Commit the volume each time the trainer publishes a new checkpoint.
+
+    Background commits carried the checkpoint files after a kill but not the
+    step_latest symlink (the #44 drill finding), so the stage commits
+    explicitly as DeepSpec's checkpoint state advances. The watcher watches
+    the newest ``step_N`` directory and the ``step_latest`` target; nothing
+    dirty happens between saves, so commits stay off the training critical
+    path. The caller stops via the returned event and joins the thread.
+    """
+    stop_event = threading.Event()
+
+    def watch() -> None:
+        local_seen: tuple[int, str] | None = None
+        while not stop_event.wait(poll_seconds):
+            state = _step_state(checkpoint_root)
+            if state is not None and state != local_seen:
+                commit()
+                local_seen = state
+
+    watcher = threading.Thread(target=watch, name="train-checkpoint-committer", daemon=True)
+    watcher.start()
+    return watcher, stop_event

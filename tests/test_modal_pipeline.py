@@ -2,6 +2,7 @@
 
 import json
 import runpy
+import time
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,8 @@ count_jsonl_lines = _lib["count_jsonl_lines"]
 write_slice_plan = _lib["write_slice_plan"]
 build_cache_cmd = _lib["build_cache_cmd"]
 build_train_cmd = _lib["build_train_cmd"]
+ensure_step_latest_link = _lib["ensure_step_latest_link"]
+spawn_checkpoint_committer = _lib["spawn_checkpoint_committer"]
 
 
 def _seed_volume(tmp_path: Path, exp_name: str) -> None:
@@ -177,3 +180,67 @@ def test_train_cmd_can_override_the_checkpoint_cadence() -> None:
         max_steps=12,
     )
     assert not any("checkpointing_steps" in part for part in bare)
+
+
+def test_heal_recreates_a_missing_step_latest_link(tmp_path: Path) -> None:
+    """A kill-left checkpoint set gets its resume symlink back."""
+    (tmp_path / "step_5").mkdir()
+    (tmp_path / "step_12").mkdir()
+    note = ensure_step_latest_link(tmp_path)
+    assert note is not None
+    assert "step_12" in note
+    assert (tmp_path / "step_latest").is_symlink()
+    assert (tmp_path / "step_latest").readlink().as_posix().endswith("step_12")
+
+
+def test_heal_leaves_existing_links_and_empty_roots_alone(tmp_path: Path) -> None:
+    """An existing symlink or a checkpoint-less root is a no-op."""
+    assert ensure_step_latest_link(tmp_path) is None
+    (tmp_path / "step_5").mkdir()
+    target = tmp_path / "step_5"
+    (tmp_path / "step_latest").symlink_to(target)
+    assert ensure_step_latest_link(tmp_path) is None
+    assert (tmp_path / "step_latest").readlink().as_posix().endswith("step_5")
+
+
+def test_committer_commits_when_a_checkpoint_appears(tmp_path: Path) -> None:
+    """A new step dir (or moved step_latest) triggers exactly a commit."""
+    commits: list[int] = []
+    watcher, stop = spawn_checkpoint_committer(
+        checkpoint_root=tmp_path,
+        commit=lambda: commits.append(len(commits)),
+        poll_seconds=0.05,
+    )
+    try:
+        assert not commits
+        (tmp_path / "step_5").mkdir()
+        deadline = time.time() + 5
+        while not commits and time.time() < deadline:
+            time.sleep(0.05)
+        assert commits, "a new step dir must trigger a commit"
+        commits.clear()
+        (tmp_path / "step_latest").symlink_to(tmp_path / "step_5")
+        deadline = time.time() + 5
+        while not commits and time.time() < deadline:
+            time.sleep(0.05)
+        assert commits, "a moved step_latest must trigger a commit"
+        commits.clear()
+        time.sleep(0.3)
+        assert not commits, "an unchanged checkpoint state must not commit"
+    finally:
+        stop.set()
+        watcher.join(timeout=5)
+
+
+def test_committer_is_quiet_on_an_empty_root(tmp_path: Path) -> None:
+    """No checkpoint state: no commits, clean stop."""
+    commits: list[int] = []
+    watcher, stop = spawn_checkpoint_committer(
+        checkpoint_root=tmp_path,
+        commit=lambda: commits.append(len(commits)),
+        poll_seconds=0.05,
+    )
+    time.sleep(0.3)
+    stop.set()
+    watcher.join(timeout=5)
+    assert not commits
