@@ -71,6 +71,8 @@ burns wall time on a dead or misconfigured run.
 
 GitHub Issues on PhillipChaffee/GLM-5 via the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
+**Costed numbers carry sources**: a cost estimate written to a ticket cites its rate's source in that ticket (a pricing page, a merged `docs/research/` doc, or a measured arm on this effort's map) — session lore is not a record. (2026-10-13 retro; the ~$3.4/hr B200 lore vs the published $6.25 rate taught this.)
+
 ### Triage labels
 
 Default five canonical triage roles (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
