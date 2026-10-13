@@ -20,7 +20,7 @@ dependencies = ["pypdf>=6.19.0"]
 # experiments/proxy-run/dspark_proxy.py), not a PyPI package, so deptry
 # carries the documented exception instead.
 [project.optional-dependencies]
-experiments = ["torch", "modal", "datasets", "huggingface_hub", "transformers", "openai", "safetensors", "tqdm"]
+experiments = ["torch", "modal", "datasets", "huggingface_hub", "transformers", "openai", "safetensors", "sglang", "tqdm"]
 
 [tool.ruff]
 line-length = 100                   # 88 is ruff's default; 100 is a deliberate widening — the formatter wraps code to it and E501 flags what wrapping cannot touch (long strings, comments)
@@ -144,6 +144,16 @@ convention = "google"
     # Same reason as dspark_proxy.py above: `modal run` parses this file in
     # the local environment, where huggingface_hub/transformers are not
     # installed, so the probe stage imports them inside the function.
+    "PLC0415",
+    # The shared pipeline lib sits beside the app files, not on the local
+    # default import path; the sys.path shim above the import is deliberate.
+    "E402",
+]
+
+"experiments/glm-drafter/dspark_bringup.py" = [
+    # Same reason as glm_drafter.py above: `modal run` parses this file in
+    # the local environment, so the serving-image-only sglang import stays
+    # inside the function that uses it.
     "PLC0415",
     # The shared pipeline lib sits beside the app files, not on the local
     # default import path; the sys.path shim above the import is deliberate.
@@ -529,11 +539,30 @@ module = [
     "make_split",
     "dflash2_smoke",
     "glm_drafter",
+    "dspark_bringup",
     "generate_train_data_glm",
     "prepare_target_cache_glm",
     "timed_eval_glm",
 ]
 disallow_untyped_decorators = false
+
+[[tool.mypy.overrides]]
+# The DSpark bring-up app and the drafter class for sglang
+# (experiments/glm-drafter/{dspark_bringup.py,sglang-patch/glm5_dspark.py})
+# run only inside the sglang serving image, which bakes sglang at its own
+# pinned commit; the gate environment has neither sglang nor a stub, so the
+# import sees Any here (same treatment as the vendored deepspec imports).
+module = ["sglang", "sglang.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The DSpark drafter class for sglang subclasses untyped upstream base
+# classes and mirrors their untyped signatures. Runtime behavior is
+# exercised by the live smoke, so the class boundary is relaxed here only.
+module = ["glm5_dspark"]
+disallow_subclassing_any = false
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
 
 [tool.pytest.ini_options]
 # The pytest-cov documented idiom (config docs): --cov=<package> measures
