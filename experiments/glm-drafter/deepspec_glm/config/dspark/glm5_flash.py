@@ -36,7 +36,7 @@ train = {
     "warmup_ratio": 0.04,
     "weight_decay": 0.0,
     "precision": "bf16",
-    "local_batch_size": 1,
+    "local_batch_size": 4,
     "global_batch_size": 512,
     "num_train_epochs": 10,
     "max_train_steps": None,
