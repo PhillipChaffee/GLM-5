@@ -42,6 +42,9 @@ TOKENIZER_DIR = Path(
         "/tmp/opencode-scratch/GLM-5/opencode-91382",
     )
 )
+DATA_SCRIPTS_DIR = EXPERIMENT_DIR / "scripts" / "data"
+if str(DATA_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(DATA_SCRIPTS_DIR))
 
 
 def _require(name: str) -> None:
