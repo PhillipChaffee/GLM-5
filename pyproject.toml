@@ -150,6 +150,26 @@ convention = "google"
     "E402",
 ]
 
+"experiments/glm-drafter/elsi_glm.py" = [
+    # Same reason as dspark_proxy.py above: `modal run` parses this file in
+    # the local environment, where huggingface_hub is not installed, so the
+    # lib import comes from a deliberate sys.path shim.
+    "PLC0415",
+    "E402",
+]
+
+"experiments/glm-drafter/scripts/data/elsi_capture_glm.py" = [
+    # The sibling analysis module is imported through a deliberate sys.path
+    # shim (relative-script import across the mounted scripts directories);
+    # the deepspec imports land after it on purpose.
+    "E402",
+    # The transformers/forward-hook boundary resolves to Any at static time
+    # (no stubs for the hook outputs, the loaded target, or its backbone);
+    # the runtime types are exercised by the torch venv tests and the real
+    # capture run, so the hook/colate machinery stays deliberately dynamic.
+    "ANN401",
+]
+
 "experiments/glm-drafter/dspark_bringup.py" = [
     # Same reason as glm_drafter.py above: `modal run` parses this file in
     # the local environment, so the serving-image-only sglang import stays
@@ -177,6 +197,14 @@ convention = "google"
     # Same reason as the two Modal apps above: huggingface_hub resolves
     # only inside Modal runtime, so its imports stay inside the functions
     # that use it.
+    "PLC0415",
+]
+
+"experiments/glm-drafter/scripts/data/elsi_analyze.py" = [
+    # deepspec is vendored into the Modal image at build time and absent from
+    # every CPU-side consumer of the analysis core (the local tests import
+    # the module without the image), so the cache-reader import must stay
+    # inside open_cache.
     "PLC0415",
 ]
 
@@ -552,6 +580,7 @@ module = [
     "make_split",
     "dflash2_smoke",
     "glm_drafter",
+    "elsi_glm",
     "dspark_bringup",
     "budget_probe",
     "generate_train_data_glm",
@@ -630,10 +659,14 @@ exclude = [
 [tool.deptry.per_rule_ignores]
 # deepspec is vendored from the DeepSpec repo inside the Modal image
 # (DEEPSPEC_SHA in experiments/proxy-run/dspark_proxy.py): not a PyPI
-# package, so DEP001 cannot be satisfied by declaration. The PyPI stack it
-# rides with (torch, modal, datasets, huggingface_hub) is declared in
+# package, so DEP001 cannot be satisfied by declaration. token_budget_batcher
+# is a repo-local sibling module imported through a deliberate sys.path shim
+# (issue 57). The two ELSI modules are sibling files mounted side-by-side at
+# /deepspec/scripts (issue 51 analysis code): sys.path-shim imports of
+# repo-local scripts, not distributions. The PyPI stack they ride with
+# (torch, modal, datasets, huggingface_hub) is declared in
 # [project.optional-dependencies].experiments.
-DEP001 = ["deepspec", "lib", "token_budget_batcher"]
+DEP001 = ["deepspec", "lib", "token_budget_batcher", "elsi_analyze", "elsi_capture_glm"]
 # pytest is the test runner itself: it arrives with the gate environment
 # (requirements-lock.txt), not as a declared project dependency.
 DEP003 = ["pytest"]
