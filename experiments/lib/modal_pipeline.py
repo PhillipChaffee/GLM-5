@@ -245,6 +245,47 @@ def build_eval_cmd(
     return cmd
 
 
+def build_push_jobs(vol: str, exp_name: str = "") -> list[tuple[Path, str]]:
+    """Build the volume upload list: cache shards, regen data, final checkpoint.
+
+    The checkpoint arm resolves ``home/checkpoints/deepspec/<exp_name>`` and
+    uploads only the files of its last ``step_*`` directory; an unset or
+    unmatched ``exp_name`` yields no checkpoint jobs and logs why, so a
+    renamed experiment can never silently upload nothing.
+    """
+    vol_path = Path(vol)
+    jobs: list[tuple[Path, str]] = [
+        (item, f"cache/{item.name}")
+        for item in sorted((vol_path / "cache").iterdir())
+        if item.is_file()
+    ]
+    jobs.extend(
+        (item, f"data/{item.name}")
+        for item in sorted((vol_path / "data").iterdir())
+        if item.is_file()
+    )
+    ckpt_root = vol_path / "home/checkpoints/deepspec"
+    ckpt_dir = ckpt_root / exp_name if exp_name else None
+    if ckpt_dir is None:
+        log("push jobs: no exp_name given; checkpoint arm skipped")
+        return jobs
+    if not ckpt_dir.is_dir():
+        available = sorted(item.name for item in ckpt_root.iterdir()) if ckpt_root.is_dir() else []
+        log(f"push jobs: no checkpoint dir at {ckpt_dir}; available: {available or 'none'}")
+        return jobs
+    step_dirs = sorted(ckpt_dir.glob("step_*"))
+    if not step_dirs:
+        log(f"push jobs: no step_* directories under {ckpt_dir}; checkpoint arm skipped")
+        return jobs
+    final_step = step_dirs[-1]
+    jobs.extend(
+        (final_step / name, f"checkpoints/{exp_name}/{name}")
+        for name in ("model.safetensors", "config.json", "train_config.py")
+        if (final_step / name).exists()
+    )
+    return jobs
+
+
 def push_jobs_to_hf(
     repo_id: str,
     jobs: Sequence[tuple[Path, str]],
