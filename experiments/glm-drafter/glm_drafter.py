@@ -607,9 +607,11 @@ def restore_hf(repo_id: str = HF_ASSET_REPO) -> None:
     secrets=[hf_secret],
     cpu=8,
 )
-def push_to_hf(repo_id: str = "", exp_name: str = "") -> None:
-    """Upload the cache, regen data, and final checkpoint to an HF dataset repo."""
-    push_jobs_to_hf(repo_id, build_push_jobs(VOL, exp_name), "glm-drafter-run")
+def push_to_hf(repo_id: str = "", exp_name: str = "", *, include_cache: bool = False) -> None:
+    """Upload regen data + final checkpoint to an HF dataset repo (cache opt-in)."""
+    push_jobs_to_hf(
+        repo_id, build_push_jobs(VOL, exp_name, include_cache=include_cache), "glm-drafter-run"
+    )
     volume.commit()
 
 
@@ -631,6 +633,7 @@ def _build_dispatch(
     confidence_threshold: float,
     baseline: bool,
     repo_id: str,
+    include_cache: bool,
 ) -> dict[str, tuple[Any, dict[str, Any]]]:
     """Map every stage name to its function and flag-derived parameters."""
     return {
@@ -685,7 +688,10 @@ def _build_dispatch(
         "peek": (peek, {}),
         "fetch": (fetch_result, {"name": tag}),
         "restore-hf": (restore_hf, {"repo_id": repo_id} if repo_id else {}),
-        "push-hf": (push_to_hf, {"repo_id": repo_id, "exp_name": exp_name}),
+        "push-hf": (
+            push_to_hf,
+            {"repo_id": repo_id, "exp_name": exp_name, "include_cache": include_cache},
+        ),
     }
 
 
@@ -709,6 +715,7 @@ def main(
     confidence_threshold: float = 0.0,
     baseline: bool = False,
     repo_id: str = "",
+    include_cache: bool = False,
     foreground: bool = False,
 ) -> None:
     """Dispatch one pipeline stage; every flag maps to a stage parameter."""
@@ -729,6 +736,7 @@ def main(
         confidence_threshold=confidence_threshold,
         baseline=baseline,
         repo_id=repo_id,
+        include_cache=include_cache,
     )
     fn, kwargs = dispatch[stage]
     if foreground:
