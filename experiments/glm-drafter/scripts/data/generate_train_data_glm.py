@@ -149,6 +149,17 @@ def call_sglang(args, server_address, sample, max_tokens=None):
         except Exception as exc:
             return error_sample(sample, str(exc))
 
+        usage = getattr(response, "usage", None)
+        turn_tokens = {
+            "turn_completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+            "turn_prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+            "turn_reasoning_tokens": getattr(
+                getattr(usage, "completion_tokens_details", None), "reasoning_tokens", 0
+            )
+            or 0,
+        }
+        sample.setdefault("_usage", []).append(turn_tokens)
+
         response_message = response.choices[0].message
         regenerated.append(
             {
@@ -325,6 +336,10 @@ def validate_servers(args):
 def write_finished_result(future, output_handle, error_handle, stats):
     """Consume one finished future into the success or error JSONL stream."""
     sample = future.result()
+    for turn in sample.pop("_usage", []):
+        stats["completion_tokens"] += turn["turn_completion_tokens"]
+        stats["prompt_tokens"] += turn["turn_prompt_tokens"]
+        stats["reasoning_tokens"] += turn["turn_reasoning_tokens"]
     if sample["status"] == "error":
         error_handle.write(json.dumps(sample, ensure_ascii=False) + "\n")
         stats["errors"] += 1
@@ -382,16 +397,29 @@ def wait_for_queue_slot(
             time.sleep(0.05)
 
 
-def report_stats(stats):
-    """Print the final success/error counts and context-length stats."""
+def report_stats(stats, elapsed):
+    """Print the final success/error counts, token accounting, and throughput."""
     print("Processing completed.")
     print(f"  success: {stats['success']}")
     print(f"  errors: {stats['errors']}")
-    if stats["success"] > 0:
-        avg_context = stats["context_sum"] / stats["success"]
-        print(f"  context_min: {stats['context_min']}")
-        print(f"  context_max: {stats['context_max']}")
-        print(f"  context_avg: {avg_context:.2f}")
+    completion_tokens = stats["completion_tokens"]
+    prompt_tokens = stats["prompt_tokens"]
+    reasoning_tokens = stats["reasoning_tokens"]
+    print(f"  completion_tokens: {completion_tokens}")
+    print(f"  prompt_tokens: {prompt_tokens}")
+    print(f"  reasoning_tokens: {reasoning_tokens}")
+    if completion_tokens and stats["success"] > 0:
+        print(f"  completion_tokens_per_row: {completion_tokens / stats['success']:.0f}")
+    if elapsed > 0 and completion_tokens > 0:
+        print(f"  elapsed_s: {elapsed:.1f}")
+        print(f"  completion_tok_s: {completion_tokens / elapsed:.1f}")
+        print(f"  rows_per_min: {stats['success'] / (elapsed / 60):.1f}")
+    if stats["success"] == 0:
+        return
+    avg_context = stats["context_sum"] / stats["success"]
+    print(f"  context_min: {stats['context_min']}")
+    print(f"  context_max: {stats['context_max']}")
+    print(f"  context_avg: {avg_context:.2f}")
 
 
 def main():
@@ -412,7 +440,11 @@ def main():
         "context_sum": 0,
         "context_min": None,
         "context_max": 0,
+        "completion_tokens": 0,
+        "prompt_tokens": 0,
+        "reasoning_tokens": 0,
     }
+    start_time = time.perf_counter()
     queues = {server_address: [] for server_address in valid_servers}
     next_server_index = 0
     submitted_count = 0
@@ -459,7 +491,7 @@ def main():
                 write_finished_result(future, output_handle, error_handle, stats)
         progress.close()
 
-    report_stats(stats)
+    report_stats(stats, time.perf_counter() - start_time)
 
 
 if __name__ == "__main__":

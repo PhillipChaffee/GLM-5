@@ -22,6 +22,7 @@ build_cache_cmd = _lib["build_cache_cmd"]
 build_train_cmd = _lib["build_train_cmd"]
 heal_latest_checkpoint = _lib["heal_latest_checkpoint"]
 checkpoint_dir_is_intact = _lib["checkpoint_dir_is_intact"]
+spawn_checkpoint_committer = _lib["spawn_checkpoint_committer"]
 
 
 def _fake_step(dir_path: Path, *, step: int, intact: bool = True) -> None:
@@ -40,7 +41,25 @@ def _fake_step(dir_path: Path, *, step: int, intact: bool = True) -> None:
         state.write_bytes(state.read_bytes()[:8])
 
 
-spawn_checkpoint_committer = _lib["spawn_checkpoint_committer"]
+def test_cache_budget_flag_appended_only_when_set() -> None:
+    """Explicit budget adds the admission-control flags; unset adds none."""
+    with_budget = build_cache_cmd(
+        config="c",
+        train_data_path="t",
+        output_dir="o",
+        local_batch_size=2,
+        cache_script="s",
+        cache_token_budget=16_384,
+    )
+    assert with_budget[-2:] == ["--cache-token-budget", "16384"]
+    without_budget = build_cache_cmd(
+        config="c",
+        train_data_path="t",
+        output_dir="o",
+        local_batch_size=2,
+        cache_script="s",
+    )
+    assert "--cache-token-budget" not in without_budget
 
 
 def _seed_volume(tmp_path: Path, exp_name: str) -> None:
@@ -80,29 +99,35 @@ def test_checkpoint_resolves_for_a_renamed_experiment(tmp_path: Path) -> None:
     }
 
 
-def test_cache_and_data_upload_alongside_the_checkpoint(tmp_path: Path) -> None:
-    """The cache shards and regen data stay in the upload list next to the checkpoint."""
+def test_cache_upload_is_opt_in_and_data_defaults_in(tmp_path: Path) -> None:
+    """Default uploads corpus + checkpoint (#22 durable artifacts); no cache."""
     _seed_volume(tmp_path, "glm_drafter_block7_glm53flash_full")
     jobs = build_push_jobs(str(tmp_path), "glm_drafter_block7_glm53flash_full")
     assert {(src.name, dst) for src, dst in jobs if not dst.startswith("checkpoints/")} == {
-        ("shard-0000.tar", "cache/shard-0000.tar"),
         ("corpus.jsonl", "data/corpus.jsonl"),
     }
 
 
+def test_explicit_flag_uploads_the_cache_arm(tmp_path: Path) -> None:
+    """include_cache=True restores the legacy behavior for cache-durable pipelines."""
+    _seed_volume(tmp_path, "glm_drafter_block7_glm53flash_full")
+    jobs = build_push_jobs(str(tmp_path), "glm_drafter_block7_glm53flash_full", include_cache=True)
+    assert ("shard-0000.tar", "cache/shard-0000.tar") in {(src.name, dst) for src, dst in jobs}
+
+
 def test_unset_experiment_name_skips_the_checkpoint_arm(tmp_path: Path) -> None:
-    """No exp_name: cache and data still upload, no checkpoint jobs appear."""
+    """No exp_name: data still uploads (cache opt-in), no checkpoint jobs appear."""
     _seed_volume(tmp_path, "glm_drafter_block7_glm53flash_full")
     jobs = build_push_jobs(str(tmp_path))
-    assert all(not dst.startswith("checkpoints/") for _, dst in jobs)
-    assert len(jobs) == 2
+    assert not any(dst.startswith(("checkpoints/", "cache/")) for _, dst in jobs)
+    assert len(jobs) == 1
 
 
-def test_wrong_experiment_name_skips_the_checkpoint_arm(tmp_path: Path) -> None:
-    """A name with no directory on the volume yields no checkpoint jobs."""
-    _seed_volume(tmp_path, "glm_drafter_block7_glm53flash_full")
+def test_wrong_experiment_name_uploads_the_data_still(tmp_path: Path) -> None:
+    """A name with no checkpoint dir still yields the data arm (the #70 behavior)."""
+    _seed_volume(tmp_path, "glm_drafter_block7_glm53flash_fuller")
     jobs = build_push_jobs(str(tmp_path), "glm_drafter_block7_glm53flash_fuller")
-    assert all(not dst.startswith("checkpoints/") for _, dst in jobs)
+    assert ("corpus.jsonl", "data/corpus.jsonl") in {(src.name, dst) for src, dst in jobs}
 
 
 def test_slice_plan_covers_every_row_in_order() -> None:

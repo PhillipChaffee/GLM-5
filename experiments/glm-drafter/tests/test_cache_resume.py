@@ -9,6 +9,7 @@ back through the upstream CacheDataset.
 import importlib.util
 import json
 import runpy
+import sys
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -39,6 +40,9 @@ write_slice_plan = _LIB["write_slice_plan"]
 
 
 def _load(path: Path) -> ModuleType:
+    # a script run as a file resolves sibling imports via its own directory
+    if str(path.parent) not in sys.path:
+        sys.path.insert(0, str(path.parent))
     spec = importlib.util.spec_from_file_location(path.stem, path)
     assert spec is not None, f"cannot load {path}"
     assert spec.loader is not None, f"cannot load {path}"
