@@ -318,6 +318,8 @@ def train(
     local_batch_size: int = 4,
     head_type: str = "vanilla",
     max_steps: int = 0,
+    *,
+    torch_compile: bool | None = None,
 ) -> None:
     """Train the block-7 GLM drafter with DeepSpec on the cached states."""
     _run(
@@ -329,6 +331,7 @@ def train(
             head_type=head_type,
             cache_path="/vol/cache",
             max_steps=max_steps,
+            torch_compile=torch_compile,
         ),
         cwd=DEEPSPEC_DIR,
     )
@@ -350,7 +353,7 @@ def train(
 def train_smoke(
     exp_name: str = "glm_drafter_block7_glm53flash_smoke",
     epochs: int = 2,
-    local_batch_size: int = 2,
+    local_batch_size: int = 4,
     head_type: str = "vanilla",
     max_steps: int = 0,
 ) -> None:
@@ -362,6 +365,43 @@ def train_smoke(
         head_type=head_type,
         max_steps=max_steps,
     )
+
+
+SWEEP_ARMS: tuple[tuple[int, bool], ...] = (
+    (4, False),
+    (8, False),
+    (16, False),
+    (4, True),
+    (8, True),
+    (16, True),
+)
+
+
+@app.function(
+    image=deepspec_image,
+    gpu=TRAIN_GPU,
+    timeout=12 * 3600,
+    volumes={VOL: volume},
+    env={
+        "HOME": HOME,
+        "PYTHONPATH": DEEPSPEC_DIR,
+        "HF_HUB_CACHE": f"{HOME}/.cache/huggingface",
+    },
+    secrets=[hf_secret],
+)
+def train_sweep(max_steps: int = 20) -> None:
+    """Measure larger micro-batches and torch_compile engagement at smoke scale (issue 36)."""
+    for micro, compile_on in SWEEP_ARMS:
+        _log(f"[sweep-arm] micro={micro} compile={compile_on} max_steps={max_steps}")
+        try:
+            train.local(
+                exp_name=f"glm_drafter_swp_m{micro}_c{int(compile_on)}",
+                local_batch_size=micro,
+                max_steps=max_steps,
+                torch_compile=compile_on,
+            )
+        except Exception as exc:  # noqa: BLE001 - a lost arm is data, not a run-killer
+            _log(f"[sweep-arm] FAILED micro={micro} compile={compile_on}: {exc}")
 
 
 @app.function(
@@ -589,6 +629,7 @@ def _build_dispatch(
                 "max_steps": max_steps,
             },
         ),
+        "train-sweep": (train_sweep, {"max_steps": max_steps}),
         "eval": (
             evaluate,
             {

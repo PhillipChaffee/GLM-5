@@ -185,6 +185,7 @@ def build_train_cmd(
     head_type: str,
     cache_path: str,
     max_steps: int,
+    torch_compile: bool | None = None,
     train_script: str = "train.py",
 ) -> list[str]:
     """Build the drafter-training command shared by the pipeline apps."""
@@ -204,6 +205,8 @@ def build_train_cmd(
         "--opts",
         f"data.target_cache_path={cache_path}",
     ]
+    if torch_compile is not None:
+        cmd.extend(["--opts", f"train.torch_compile={torch_compile}"])
     if max_steps:
         cmd.extend(["--opts", f"train.max_train_steps={max_steps}"])
     return cmd
