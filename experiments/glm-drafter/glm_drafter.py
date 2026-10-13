@@ -10,6 +10,7 @@ active. The volume carries data, caches, checkpoints, and results.
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 import time
 from pathlib import Path
@@ -128,6 +129,51 @@ hf_secret = modal.Secret.from_name("hf-token")
 app = modal.App("glm-drafter-run")
 
 
+def _import_train_path_modules() -> None:
+    """Import every deepspec module the GPU train/eval paths execute, loudly."""
+    # The GPU paths are unexercisable locally (no torch outside the image), so
+    # a broken import in this chain only surfaces on GPU: PR #50 rewrote the
+    # glm5_trainer import and it died on rank 0 at train time, post image build.
+    # deepspec.trainer pulls base/dspark/eagle3/glm5 trainers via __init__;
+    # glm5_eval pulls the evaluator chain (base_evaluator + evaluator).
+    train_path_modules = (
+        "deepspec.trainer",
+        "deepspec.trainer.glm5_trainer",
+        "deepspec.modeling.dspark.glm5",
+        "deepspec.eval.dspark.glm5_eval",
+    )
+    for module_name in train_path_modules:
+        try:
+            importlib.import_module(module_name)
+        except Exception as exc:
+            msg = f"probe: import failed for {module_name}: {exc}"
+            raise RuntimeError(msg) from exc
+        _log(f"probe: {module_name} imports OK")
+
+
+def _exec_entry_script() -> None:
+    """Execute-load the stage entry scripts like the stages invoke them."""
+    # Loaded as files (train.py's --config loader and build_eval_cmd both hand
+    # python a path), guarded main()s after.
+    entry_scripts = (
+        "/deepspec/config/dspark/glm5_flash.py",
+        "/deepspec/scripts/timed_eval_glm.py",
+        "/deepspec/scripts/data/generate_train_data_glm.py",
+        "/deepspec/scripts/data/prepare_target_cache_glm.py",
+    )
+    for script_name in entry_scripts:
+        spec = importlib.util.spec_from_file_location(Path(script_name).stem, script_name)
+        if spec is None or spec.loader is None:
+            msg = f"probe: cannot load {script_name}"
+            raise RuntimeError(msg)
+        try:
+            spec.loader.exec_module(importlib.util.module_from_spec(spec))
+        except Exception as exc:
+            msg = f"probe: import failed for {script_name}: {exc}"
+            raise RuntimeError(msg) from exc
+        _log(f"probe: {Path(script_name).name} imports OK")
+
+
 @app.function(
     image=deepspec_image,
     volumes={VOL: volume},
@@ -141,6 +187,10 @@ def probe() -> None:
     loads the gated target config/tokenizer, renders the chat template with
     the regen kwargs, reads the DFlash2 baseline config, and compares the
     trainer's expected checkpoint keys against the real safetensors index.
+    It then imports every overlay module the GPU stages execute (trainer chain,
+    drafter package, evaluator chain, config module) plus the three data/eval
+    entry scripts, so a broken import dies here at image time instead of after
+    a GPU acquisition cycle.
     """
     import transformers
 
@@ -197,6 +247,8 @@ def probe() -> None:
     )
     for key in interesting[:40]:
         _log(f"probe: index key {key}")
+    _import_train_path_modules()
+    _exec_entry_script()
     _log("probe: OK")
 
 
