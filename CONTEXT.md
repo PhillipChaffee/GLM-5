@@ -90,6 +90,10 @@ _Avoid_: input projection, main_proj
 The target's final hidden state after the mHC fold and final RMSNorm — what "the last captured layer" resolves to under the GLM capture convention; sglang's glm5_next capture cannot produce it as shipped.
 _Avoid_: last hidden state, final-layer output
 
+**Loss-decay gamma**:
+The per-position weighting exponent of the block training loss across draft positions (`loss_decay_gamma` in the DeepSpec configs; the γ of DFlash's Eq. 4). A different γ than the block-size γ above: the block-size γ counts draft slots and is 7 for this effort, while the loss gamma is 4.0 in every upstream DSpark config and stays copied verbatim.
+_Avoid_: γ (unqualified), decay exponent
+
 ## Costing
 
 **Utilization floor**:
