@@ -245,20 +245,33 @@ def build_eval_cmd(
     return cmd
 
 
-def build_push_jobs(vol: str, exp_name: str = "") -> list[tuple[Path, str]]:
-    """Build the volume upload list: cache shards, regen data, final checkpoint.
+def _cache_shard_jobs(vol_path: Path) -> list[tuple[Path, str]]:
+    """Cache-shard upload jobs from a volume; the caller decides to include them."""
+    return [
+        (item, f"cache/{item.name}")
+        for item in sorted((vol_path / "cache").iterdir())
+        if item.is_file()
+    ]
 
+
+def build_push_jobs(
+    vol: str, exp_name: str = "", *, include_cache: bool = False
+) -> list[tuple[Path, str]]:
+    """Build the volume upload list: regen data, final checkpoint, opt-in cache.
+
+    The cache arm is opt-in: the #22 decision names corpus text + checkpoints
+    as this effort's only durable artifacts, while the plan-relevant cache is
+    a hold-then-delete derived artifact (its upload cost and the ~$2-4k
+    rebuild lever are scoped in the push-hf ticket #70); ``include_cache=
+    True`` exists for pipelines whose cache *is* durable (the proxy run kept
+    its 611 GB cache for the A/B).
     The checkpoint arm resolves ``home/checkpoints/deepspec/<exp_name>`` and
     uploads only the files of its last ``step_*`` directory; an unset or
     unmatched ``exp_name`` yields no checkpoint jobs and logs why, so a
     renamed experiment can never silently upload nothing.
     """
     vol_path = Path(vol)
-    jobs: list[tuple[Path, str]] = [
-        (item, f"cache/{item.name}")
-        for item in sorted((vol_path / "cache").iterdir())
-        if item.is_file()
-    ]
+    jobs: list[tuple[Path, str]] = _cache_shard_jobs(vol_path) if include_cache else []
     jobs.extend(
         (item, f"data/{item.name}")
         for item in sorted((vol_path / "data").iterdir())
