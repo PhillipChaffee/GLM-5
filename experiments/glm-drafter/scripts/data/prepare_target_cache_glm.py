@@ -11,6 +11,7 @@ agree on the last-layer payload.
 import argparse
 import json
 import os
+import time
 from dataclasses import dataclass
 
 import torch
@@ -23,7 +24,6 @@ from deepspec.data.target_cache_dataset import (
     build_global_target_cache_shard_map,
     build_target_cache_manifest,
     cleanup_target_cache_tmp_dir,
-    compute_local_sample_range,
     finalize_target_cache_index,
     load_local_cache_write_summary,
     prepare_target_cache_output_dir,
@@ -42,6 +42,7 @@ from deepspec.utils import (
     parse_opts_to_config,
     seed_all,
 )
+from token_budget_batcher import build_packs, padded_token_count
 from torch.utils.data import DataLoader, Subset
 from transformers import AutoModel, AutoTokenizer
 
@@ -161,9 +162,53 @@ def parse_args():
     parser.add_argument("--max-shard-bytes", type=int, default=64 * 1024**3)
     parser.add_argument("--local-batch-size", type=int, default=2)
     parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument(
+        "--cache-token-budget",
+        type=int,
+        default=None,
+        help=(
+            "Greedy whole-conversation admission controlled by a post-truncation "
+            "token budget over a length-sorted stream; --local-batch-size survives "
+            "as the conversation-count cap. Unset keeps the fixed-count "
+            "DataLoader (proven batch 2)."
+        ),
+    )
+    parser.add_argument(
+        "--sample-start",
+        type=int,
+        default=None,
+        help="First dataset row to process (slice mode; requires --sample-end).",
+    )
+    parser.add_argument(
+        "--sample-end",
+        type=int,
+        default=None,
+        help="One past the last dataset row to process (slice mode; requires --sample-start).",
+    )
     cli_args = parser.parse_args()
     config = parse_opts_to_config(cli_args.opts, load_config(cli_args.config))
     return cli_args, config
+
+
+def resolve_sample_range(
+    sample_start: int | None,
+    sample_end: int | None,
+    num_samples: int,
+) -> tuple[int, int]:
+    """Resolve the processed row range: explicit slice bounds or the full set."""
+    if (sample_start is None) != (sample_end is None):
+        msg = "--sample-start and --sample-end must be given together"
+        raise ValueError(msg)
+    if sample_start is None or sample_end is None:
+        return 0, num_samples
+    start, end = sample_start, sample_end
+    if not 0 <= start <= end <= num_samples:
+        msg = (
+            f"invalid sample range [{start}, {end}) for a dataset of {num_samples} rows; "
+            "the range must satisfy 0 <= start <= end <= num_samples"
+        )
+        raise ValueError(msg)
+    return start, end
 
 
 def _write_manifest(
@@ -207,6 +252,102 @@ def _print_prepare_progress(processed_samples: int, total_samples: int):
     )
 
 
+def _progress_through_batch(batch_idx, pack_prefix_counts, batch_size, local_total_samples):
+    """Rows accounted through the just-enumerated batch, under both modes."""
+    if pack_prefix_counts is not None:
+        return pack_prefix_counts[batch_idx]
+    return min((batch_idx + 1) * batch_size, local_total_samples)
+
+
+def _compute_trunc_lengths(local_subset, train_collator):
+    """Post-truncation token length per subset row, via the collator itself."""
+    lengths = []
+    filtered_rows = 0
+    for row_index in range(len(local_subset)):
+        batch = train_collator([local_subset[row_index]])
+        if batch is None:
+            filtered_rows += 1
+            lengths.append(0)
+        else:
+            lengths.append(int(batch["loss_mask"].shape[1]))
+    return lengths, filtered_rows
+
+
+def _build_cache_dataloader(
+    *,
+    local_subset,
+    train_collator,
+    cli_args,
+    config,
+    local_total_samples,
+):
+    """Build the capture dataloader under both batching modes.
+
+    ``--cache-token-budget`` selects serving-style admission control over a
+    length-sorted stream (the sort order is canonical, so the resumable
+    build's slices are contiguous ranges of it); unset selects the upstream
+    fixed-count loader whose batch 2 default is the proven safe floor.
+    """
+    if cli_args.cache_token_budget is None:
+        pack_prefix_counts = None
+        dataloader = DataLoader(
+            local_subset,
+            batch_size=int(cli_args.local_batch_size),
+            collate_fn=train_collator,
+            num_workers=int(cli_args.num_workers),
+            pin_memory=True,
+            drop_last=False,
+        )
+        return dataloader, pack_prefix_counts
+    token_budget = int(cli_args.cache_token_budget)
+    lengths, filtered_rows = _compute_trunc_lengths(local_subset, train_collator)
+    packs = build_packs(
+        lengths,
+        token_budget=token_budget,
+        max_count=int(cli_args.local_batch_size),
+        max_row_tokens=int(config.data.max_length),
+    )
+    flat_indices = sorted(index for pack in packs for index in pack)
+    expected_values = list(range(local_total_samples))
+    if flat_indices != expected_values:
+        coverage_error = "token-budget packs do not cover each subset row exactly once"
+        raise ValueError(coverage_error)
+    pack_prefix_counts = []
+    running_rows = 0
+    for pack in packs:
+        running_rows += len(pack)
+        pack_prefix_counts.append(running_rows)
+    print(
+        json.dumps(
+            {
+                "batcher": "token-budget",
+                "token_budget": token_budget,
+                "max_count": int(cli_args.local_batch_size),
+                "max_length": int(config.data.max_length),
+                "total_rows": local_total_samples,
+                "filtered_rows": filtered_rows,
+                "packs": len(packs),
+                "real_tokens": int(sum(lengths)),
+                "padded_tokens": int(padded_token_count(lengths, packs)),
+                "largest_pack_rows": max(len(pack) for pack in packs),
+                "largest_pack_tokens": max(
+                    sum(int(lengths[index]) for index in pack) for pack in packs
+                ),
+            },
+            indent=4,
+        ),
+        flush=True,
+    )
+    dataloader = DataLoader(
+        local_subset,
+        batch_sampler=packs,
+        collate_fn=train_collator,
+        num_workers=int(cli_args.num_workers),
+        pin_memory=True,
+    )
+    return dataloader, pack_prefix_counts
+
+
 def main():
     cli_args, config = parse_args()
     train_data_paths = list(cli_args.train_data_path)
@@ -224,6 +365,7 @@ def main():
                 "min_loss_tokens": min_loss_tokens,
                 "max_shard_bytes": int(cli_args.max_shard_bytes),
                 "local_batch_size": int(cli_args.local_batch_size),
+                "cache_token_budget": cli_args.cache_token_budget,
                 "num_workers": int(cli_args.num_workers),
             },
             indent=4,
@@ -236,10 +378,10 @@ def main():
     os.makedirs(rank_dir, exist_ok=True)
 
     dataset = JsonLineDataset(data_paths=train_data_paths)
-    local_start, local_end = compute_local_sample_range(
+    local_start, local_end = resolve_sample_range(
+        cli_args.sample_start,
+        cli_args.sample_end,
         num_samples=len(dataset),
-        rank=0,
-        world_size=1,
     )
     local_total_samples = local_end - local_start
 
@@ -260,13 +402,12 @@ def main():
         max_length=config.data.max_length,
         min_loss_tokens=min_loss_tokens,
     )
-    dataloader = DataLoader(
-        local_subset,
-        batch_size=int(cli_args.local_batch_size),
-        collate_fn=train_collator,
-        num_workers=int(cli_args.num_workers),
-        pin_memory=True,
-        drop_last=False,
+    dataloader, pack_prefix_counts = _build_cache_dataloader(
+        local_subset=local_subset,
+        train_collator=train_collator,
+        cli_args=cli_args,
+        config=config,
+        local_total_samples=local_total_samples,
     )
     writer = AsyncTargetCacheWriter(
         rank_dir=rank_dir,
@@ -276,11 +417,16 @@ def main():
 
     processed_local_samples = 0
     last_progress_printed = 0
+    capture_rows = 0
+    capture_real_tokens = 0
+    capture_start = time.perf_counter()
     try:
         with torch.no_grad():
             for batch_idx, batch in enumerate(dataloader):
-                processed_local_samples = min(
-                    (batch_idx + 1) * int(cli_args.local_batch_size),
+                processed_local_samples = _progress_through_batch(
+                    batch_idx,
+                    pack_prefix_counts,
+                    int(cli_args.local_batch_size),
                     local_total_samples,
                 )
                 should_print_progress = (
@@ -306,6 +452,8 @@ def main():
                     target_layer_ids=target_layer_ids,
                 )
                 seq_lens = batch["attention_mask"].sum(dim=1).tolist()
+                capture_rows += len(seq_lens)
+                capture_real_tokens += int(batch["attention_mask"].sum())
                 for sample_idx_in_batch, seq_len in enumerate(seq_lens):
                     seq_len = int(seq_len)
                     writer.write_sample(
@@ -327,6 +475,22 @@ def main():
                     last_progress_printed = processed_local_samples
     finally:
         writer.close()
+    capture_seconds = time.perf_counter() - capture_start
+    print(
+        json.dumps(
+            {
+                "batcher": "token-budget" if pack_prefix_counts is not None else "fixed-count",
+                "local_batch_size": int(cli_args.local_batch_size),
+                "cache_token_budget": cli_args.cache_token_budget,
+                "rows": capture_rows,
+                "real_tokens": capture_real_tokens,
+                "seconds": round(capture_seconds, 1),
+                "tok_per_s": round(capture_real_tokens / max(capture_seconds, 1e-9)),
+            },
+            indent=4,
+        ),
+        flush=True,
+    )
     del target_model
     torch.cuda.empty_cache()
     dataset.close()
@@ -367,7 +531,8 @@ def main():
     cleanup_target_cache_tmp_dir(output_dir)
     print(
         f"Prepared target cache at {output_dir} with "
-        f"{num_valid_samples}/{len(dataset)} valid samples.",
+        f"{num_valid_samples}/{local_end - local_start} valid samples "
+        f"(rows [{local_start}, {local_end}) of {len(dataset)}).",
         flush=True,
     )
 

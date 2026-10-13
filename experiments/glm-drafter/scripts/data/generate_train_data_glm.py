@@ -149,6 +149,17 @@ def call_sglang(args, server_address, sample, max_tokens=None):
         except Exception as exc:
             return error_sample(sample, str(exc))
 
+        usage = getattr(response, "usage", None)
+        turn_tokens = {
+            "turn_completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+            "turn_prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+            "turn_reasoning_tokens": getattr(
+                getattr(usage, "completion_tokens_details", None), "reasoning_tokens", 0
+            )
+            or 0,
+        }
+        sample.setdefault("_usage", []).append(turn_tokens)
+
         response_message = response.choices[0].message
         regenerated.append(
             {
@@ -196,13 +207,73 @@ def count_lines(path, *, required=False):
         return sum(1 for _ in handle)
 
 
-def find_resume_offset(output_path, error_path):
-    """Return (skip, success, error) counts for resume mode."""
-    if not os.path.exists(output_path):
-        return 0, 0, 0
-    success_count = count_lines(output_path)
-    error_count = count_lines(error_path)
-    return success_count + error_count, success_count, error_count
+def truncate_partial_line(path):
+    """Drop a trailing write that a killed container may have left mid-line.
+
+    A complete row always ends with a newline; a committed file that does
+    not was cut mid-write, and appending after it would glue rows together.
+    """
+    if not os.path.exists(path):
+        return
+    with open(path, "rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        size = handle.tell()
+        if size == 0:
+            return
+        handle.seek(-1, os.SEEK_END)
+        if handle.read(1) == b"\n":
+            return
+    with open(path, "rb") as handle:
+        data = handle.read()
+    with open(path, "wb") as handle:
+        handle.write(data[: data.rfind(b"\n") + 1])
+    print(f"Truncated a partial trailing line in {path}", flush=True)
+
+
+def collect_done_indices(output_path, error_path):
+    """Input row indices already processed, read from committed rows.
+
+    Results are written in completion order, not input order, and a kill
+    commits an arbitrary subset of them — so a line count is not a resume
+    cursor (the #44 regen drill measured 37 duplicate rows from that
+    assumption). Each row carries ``input_index``; the set of committed
+    indices is the exact resume state.
+    """
+    done = set()
+    for path in (output_path, error_path):
+        if not os.path.exists(path):
+            continue
+        with open(path, encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    print(f"Skipping unparsable line in {path} during resume scan", flush=True)
+                    continue
+                index = row.get("input_index")
+                if isinstance(index, int) and index >= 0:
+                    done.add(index)
+    return done
+
+
+def resolve_resume_state(args, error_path):
+    """Compute the already-done input indices and the output open mode."""
+    if not args.resume:
+        return set(), "w"
+    truncate_partial_line(args.output_file_path)
+    truncate_partial_line(error_path)
+    done_indices = collect_done_indices(args.output_file_path, error_path)
+    if done_indices:
+        print(
+            f"Resume mode: {len(done_indices)} input rows already processed "
+            f"({count_lines(args.output_file_path)} output lines, "
+            f"{count_lines(error_path)} error lines)",
+            flush=True,
+        )
+    return done_indices, "a"
 
 
 def validate_server(args, server_address, probe):
@@ -265,6 +336,10 @@ def validate_servers(args):
 def write_finished_result(future, output_handle, error_handle, stats):
     """Consume one finished future into the success or error JSONL stream."""
     sample = future.result()
+    for turn in sample.pop("_usage", []):
+        stats["completion_tokens"] += turn["turn_completion_tokens"]
+        stats["prompt_tokens"] += turn["turn_prompt_tokens"]
+        stats["reasoning_tokens"] += turn["turn_reasoning_tokens"]
     if sample["status"] == "error":
         error_handle.write(json.dumps(sample, ensure_ascii=False) + "\n")
         stats["errors"] += 1
@@ -322,33 +397,29 @@ def wait_for_queue_slot(
             time.sleep(0.05)
 
 
-def resolve_resume_state(args, total_lines, error_path):
-    """Compute skip counts and the output open mode for resume mode."""
-    if not args.resume:
-        return 0, "w"
-    skip_lines, existing_success, existing_errors = find_resume_offset(
-        args.output_file_path, error_path
-    )
-    if skip_lines >= total_lines:
-        print(f"All {total_lines} samples are already processed.")
-        return skip_lines, None
-    if skip_lines > 0:
-        print(
-            f"Resume mode: {existing_success} success, {existing_errors} errors, skip {skip_lines}"
-        )
-    return skip_lines, "a"
-
-
-def report_stats(stats):
-    """Print the final success/error counts and context-length stats."""
+def report_stats(stats, elapsed):
+    """Print the final success/error counts, token accounting, and throughput."""
     print("Processing completed.")
     print(f"  success: {stats['success']}")
     print(f"  errors: {stats['errors']}")
-    if stats["success"] > 0:
-        avg_context = stats["context_sum"] / stats["success"]
-        print(f"  context_min: {stats['context_min']}")
-        print(f"  context_max: {stats['context_max']}")
-        print(f"  context_avg: {avg_context:.2f}")
+    completion_tokens = stats["completion_tokens"]
+    prompt_tokens = stats["prompt_tokens"]
+    reasoning_tokens = stats["reasoning_tokens"]
+    print(f"  completion_tokens: {completion_tokens}")
+    print(f"  prompt_tokens: {prompt_tokens}")
+    print(f"  reasoning_tokens: {reasoning_tokens}")
+    if completion_tokens and stats["success"] > 0:
+        print(f"  completion_tokens_per_row: {completion_tokens / stats['success']:.0f}")
+    if elapsed > 0 and completion_tokens > 0:
+        print(f"  elapsed_s: {elapsed:.1f}")
+        print(f"  completion_tok_s: {completion_tokens / elapsed:.1f}")
+        print(f"  rows_per_min: {stats['success'] / (elapsed / 60):.1f}")
+    if stats["success"] == 0:
+        return
+    avg_context = stats["context_sum"] / stats["success"]
+    print(f"  context_min: {stats['context_min']}")
+    print(f"  context_max: {stats['context_max']}")
+    print(f"  context_avg: {avg_context:.2f}")
 
 
 def main():
@@ -359,9 +430,8 @@ def main():
 
     total_lines = count_lines(args.input_file_path, required=True)
     error_path = args.output_file_path.replace(".jsonl", "_error.jsonl")
-    skip_lines, file_mode = resolve_resume_state(args, total_lines, error_path)
-    if file_mode is None:
-        return
+    done_indices, file_mode = resolve_resume_state(args, error_path)
+    done_count = len(done_indices)
 
     valid_servers = validate_servers(args)
     stats = {
@@ -370,7 +440,11 @@ def main():
         "context_sum": 0,
         "context_min": None,
         "context_max": 0,
+        "completion_tokens": 0,
+        "prompt_tokens": 0,
+        "reasoning_tokens": 0,
     }
+    start_time = time.perf_counter()
     queues = {server_address: [] for server_address in valid_servers}
     next_server_index = 0
     submitted_count = 0
@@ -381,20 +455,21 @@ def main():
         open(error_path, file_mode, encoding="utf-8") as error_handle,
         ThreadPoolExecutor(max_workers=args.concurrency * len(valid_servers)) as executor,
     ):
-        for _ in range(skip_lines):
-            next(input_handle, None)
-
         progress_total = (
             total_lines
             if args.num_samples is None
-            else min(total_lines, skip_lines + args.num_samples)
+            else min(total_lines, done_count + args.num_samples)
         )
-        progress = tqdm(total=progress_total, initial=skip_lines, desc="Processing")
-        for line in input_handle:
+        progress = tqdm(total=progress_total, initial=done_count, desc="Processing")
+        for row_index, line in enumerate(input_handle):
             if args.num_samples is not None and submitted_count >= args.num_samples:
                 break
 
+            if row_index in done_indices:
+                continue
+
             sample = json.loads(line)
+            sample["input_index"] = row_index
             server_address = valid_servers[next_server_index]
             next_server_index = (next_server_index + 1) % len(valid_servers)
 
@@ -416,7 +491,7 @@ def main():
                 write_finished_result(future, output_handle, error_handle, stats)
         progress.close()
 
-    report_stats(stats)
+    report_stats(stats, time.perf_counter() - start_time)
 
 
 if __name__ == "__main__":
