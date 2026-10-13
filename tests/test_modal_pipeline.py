@@ -6,9 +6,32 @@ from pathlib import Path
 # The lib sits beside the experiment apps, not on the import path (see the
 # E402 sys.path shims in the apps); runpy loads it without inventing a
 # second module name for a file mypy already tracks as lib.modal_pipeline.
-build_push_jobs = runpy.run_path(
+_modal_pipeline = runpy.run_path(
     str(Path(__file__).resolve().parent.parent / "experiments" / "lib" / "modal_pipeline.py")
-)["build_push_jobs"]
+)
+build_push_jobs = _modal_pipeline["build_push_jobs"]
+build_cache_cmd = _modal_pipeline["build_cache_cmd"]
+
+
+def test_cache_budget_flag_appended_only_when_set() -> None:
+    """Explicit budget adds the admission-control flags; unset adds none."""
+    with_budget = build_cache_cmd(
+        config="c",
+        train_data_path="t",
+        output_dir="o",
+        local_batch_size=2,
+        cache_script="s",
+        cache_token_budget=16_384,
+    )
+    assert with_budget[-2:] == ["--cache-token-budget", "16384"]
+    without_budget = build_cache_cmd(
+        config="c",
+        train_data_path="t",
+        output_dir="o",
+        local_batch_size=2,
+        cache_script="s",
+    )
+    assert "--cache-token-budget" not in without_budget
 
 
 def _seed_volume(tmp_path: Path, exp_name: str) -> None:

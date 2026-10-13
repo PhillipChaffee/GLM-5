@@ -160,9 +160,16 @@ def build_cache_cmd(
     output_dir: str,
     local_batch_size: int,
     cache_script: str,
+    cache_token_budget: int | None = None,
 ) -> list[str]:
-    """Build the target-cache command shared by the pipeline apps."""
-    return [
+    """Build the target-cache command shared by the pipeline apps.
+
+    ``cache_token_budget`` turns the capture pass's fixed-count batching
+    into serving-style admission control (length-sorted, whole-conversation
+    packs bounded by the token budget with ``local_batch_size`` as the
+    count cap); unset leaves the proven batch-2 floor untouched.
+    """
+    command = [
         "python",
         cache_script,
         "--config",
@@ -174,6 +181,12 @@ def build_cache_cmd(
         "--local-batch-size",
         str(local_batch_size),
     ]
+    if cache_token_budget is not None:
+        command += [
+            "--cache-token-budget",
+            str(cache_token_budget),
+        ]
+    return command
 
 
 def build_train_cmd(

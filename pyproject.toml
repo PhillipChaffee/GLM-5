@@ -590,7 +590,7 @@ exclude = [
 # package, so DEP001 cannot be satisfied by declaration. The PyPI stack it
 # rides with (torch, modal, datasets, huggingface_hub) is declared in
 # [project.optional-dependencies].experiments.
-DEP001 = ["deepspec", "lib"]
+DEP001 = ["deepspec", "lib", "token_budget_batcher"]
 # pytest is the test runner itself: it arrives with the gate environment
 # (requirements-lock.txt), not as a declared project dependency.
 DEP003 = ["pytest"]

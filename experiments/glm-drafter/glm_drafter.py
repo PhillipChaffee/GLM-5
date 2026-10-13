@@ -491,15 +491,27 @@ def regen_audit() -> None:
     },
     secrets=[hf_secret],
 )
-def cache(local_batch_size: int = 2) -> None:
-    """Build the target hidden-state cache in a single process with device_map=auto."""
+def cache(
+    local_batch_size: int = 2,
+    cache_token_budget: int | None = None,
+    train_data_path: str = "",
+) -> None:
+    """Build the target hidden-state cache in a single process with device_map=auto.
+
+    ``cache_token_budget`` enables serving-style token-budget admission
+    (length-sorted, whole-conversation packs) with ``local_batch_size`` as
+    the conversation-count cap; unset keeps the proven fixed batch 2.
+    ``train_data_path`` overrides the default regen corpus (budget-probe
+    sweeps run on a small head, not the full corpus).
+    """
     _run(
         build_cache_cmd(
             config="config/dspark/glm5_flash.py",
             cache_script="scripts/data/prepare_target_cache_glm.py",
-            train_data_path=f"{VOL}/data/regen.jsonl",
+            train_data_path=train_data_path or f"{VOL}/data/regen.jsonl",
             output_dir=f"{VOL}/cache",
             local_batch_size=local_batch_size,
+            cache_token_budget=cache_token_budget,
         ),
         cwd=DEEPSPEC_DIR,
     )
@@ -790,6 +802,8 @@ def _build_dispatch(
     include_cache: bool,
     ramp_sample_size: int,
     ramp_arms: str,
+    cache_token_budget: int | None,
+    cache_data_path: str,
 ) -> dict[str, tuple[Any, dict[str, Any]]]:
     """Map every stage name to its function and flag-derived parameters."""
     return {
@@ -798,7 +812,14 @@ def _build_dispatch(
         "regen": (regen, {"sample_size": sample_size, "concurrency": concurrency}),
         "regen-ramp": (regen_ramp, {"sample_size": ramp_sample_size, "arms": ramp_arms}),
         "regen-audit": (regen_audit, {}),
-        "cache": (cache, {"local_batch_size": cache_batch_size}),
+        "cache": (
+            cache,
+            {
+                "local_batch_size": cache_batch_size,
+                "cache_token_budget": cache_token_budget,
+                "train_data_path": cache_data_path,
+            },
+        ),
         "train": (
             train,
             {
@@ -876,6 +897,8 @@ def main(
     include_cache: bool = False,
     ramp_sample_size: int = 256,
     ramp_arms: str = "64,128,256,512",
+    cache_token_budget: int | None = None,
+    cache_data_path: str = "",
     foreground: bool = False,
 ) -> None:
     """Dispatch one pipeline stage; every flag maps to a stage parameter."""
@@ -899,6 +922,8 @@ def main(
         include_cache=include_cache,
         ramp_sample_size=ramp_sample_size,
         ramp_arms=ramp_arms,
+        cache_token_budget=cache_token_budget,
+        cache_data_path=cache_data_path,
     )
     fn, kwargs = dispatch[stage]
     if foreground:
