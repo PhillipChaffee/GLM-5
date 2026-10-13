@@ -3,6 +3,7 @@
 import json
 import runpy
 import time
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,26 @@ count_jsonl_lines = _lib["count_jsonl_lines"]
 write_slice_plan = _lib["write_slice_plan"]
 build_cache_cmd = _lib["build_cache_cmd"]
 build_train_cmd = _lib["build_train_cmd"]
-ensure_step_latest_link = _lib["ensure_step_latest_link"]
+heal_latest_checkpoint = _lib["heal_latest_checkpoint"]
+checkpoint_dir_is_intact = _lib["checkpoint_dir_is_intact"]
+
+
+def _fake_step(dir_path: Path, *, step: int, intact: bool = True) -> None:
+    """A step dir whose files pass/fail the structural check."""
+    step_dir = dir_path / f"step_{step}"
+    step_dir.mkdir()
+    root = step_dir / "model.safetensors"
+    if intact:
+        root.write_bytes(b"\x08\x00\x00\x00\x00\x00\x00\x00" + b"{}" + b"\0" * 32)
+    else:
+        root.write_bytes(b"\x20\x00\x00\x00\x00\x00\x00\x00" + b"{}")
+    state = step_dir / "training_state.rank0.pt"
+    with zipfile.ZipFile(state, "w") as archive:
+        archive.writestr("x", "y")
+    if not intact:
+        state.write_bytes(state.read_bytes()[:8])
+
+
 spawn_checkpoint_committer = _lib["spawn_checkpoint_committer"]
 
 
@@ -183,23 +203,43 @@ def test_train_cmd_can_override_the_checkpoint_cadence() -> None:
 
 
 def test_heal_recreates_a_missing_step_latest_link(tmp_path: Path) -> None:
-    """A kill-left checkpoint set gets its resume symlink back."""
-    (tmp_path / "step_5").mkdir()
-    (tmp_path / "step_12").mkdir()
-    note = ensure_step_latest_link(tmp_path)
+    """A kill-left intact checkpoint set gets its resume symlink back."""
+    _fake_step(tmp_path, step=5)
+    _fake_step(tmp_path, step=12)
+    note = heal_latest_checkpoint(tmp_path)
     assert note is not None
     assert "step_12" in note
     assert (tmp_path / "step_latest").is_symlink()
     assert (tmp_path / "step_latest").readlink().as_posix().endswith("step_12")
 
 
+def test_heal_skips_a_truncated_step_and_takes_the_newest_intact(tmp_path: Path) -> None:
+    """A mid-save kill's truncated newest dir is skipped, not fatal."""
+    _fake_step(tmp_path, step=5)
+    _fake_step(tmp_path, step=12, intact=False)
+    note = heal_latest_checkpoint(tmp_path)
+    assert note is not None
+    assert "step_5" in note
+    assert "step_12" in note  # named as skipped
+    assert (tmp_path / "step_latest").readlink().as_posix().endswith("step_5")
+    assert checkpoint_dir_is_intact(tmp_path / "step_5") is True
+    assert checkpoint_dir_is_intact(tmp_path / "step_12") is False
+
+
+def test_heal_with_no_intact_step_leaves_the_root_alone(tmp_path: Path) -> None:
+    """Only truncated dirs: no link, fresh restart is the fallback."""
+    _fake_step(tmp_path, step=5, intact=False)
+    assert heal_latest_checkpoint(tmp_path) is None
+    assert not (tmp_path / "step_latest").exists()
+
+
 def test_heal_leaves_existing_links_and_empty_roots_alone(tmp_path: Path) -> None:
     """An existing symlink or a checkpoint-less root is a no-op."""
-    assert ensure_step_latest_link(tmp_path) is None
-    (tmp_path / "step_5").mkdir()
+    assert heal_latest_checkpoint(tmp_path) is None
+    _fake_step(tmp_path, step=5)
     target = tmp_path / "step_5"
     (tmp_path / "step_latest").symlink_to(target)
-    assert ensure_step_latest_link(tmp_path) is None
+    assert heal_latest_checkpoint(tmp_path) is None
     assert (tmp_path / "step_latest").readlink().as_posix().endswith("step_5")
 
 

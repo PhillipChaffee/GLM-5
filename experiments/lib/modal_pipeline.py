@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import json
 import re
+import struct
 import subprocess
 import sys
 import threading
 import time
+import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -402,12 +404,48 @@ STEP_DIR_PATTERN = re.compile(r"^step_(\d+)$")
 STEP_LATEST_NAME = "step_latest"
 
 
-def ensure_step_latest_link(checkpoint_root: Path) -> str | None:
-    """Point a missing ``step_latest`` at the newest step dir; return a note.
+def os_symlink(target: Path, link: Path) -> None:
+    """Create ``link -> target``, replacing a stale non-link path if present."""
+    if link.exists() and not link.is_symlink():
+        link.unlink()
+    link.symlink_to(target)
+
+
+def checkpoint_dir_is_intact(step_dir: Path) -> bool:
+    """Structurally validate a step dir's checkpoint files.
+
+    A kill mid-save can commit a truncated ``.pt`` (zip without its trailing
+    central directory — the drill-D load failure) or a truncated
+    ``model.safetensors``; both must be rejected before a resume points at
+    the dir. Checks only layout, not content: the central directory read for
+    zip files, the 8-byte header length for safetensors.
+    """
+    for path in sorted(step_dir.iterdir()):
+        if path.name.endswith(".pt") and path.is_file():
+            try:
+                with zipfile.ZipFile(path) as archive:
+                    archive.namelist()
+            except (OSError, zipfile.BadZipFile):
+                return False
+        elif path.name == "model.safetensors" and path.is_file():
+            try:
+                with path.open("rb") as handle:
+                    (header_len,) = struct.unpack("<Q", handle.read(8))
+            except (OSError, struct.error):
+                return False
+            if 8 + header_len >= path.stat().st_size:
+                return False
+    return True
+
+
+def heal_latest_checkpoint(checkpoint_root: Path) -> str | None:
+    """Point a missing ``step_latest`` at the newest intact step dir.
 
     A killed container lost the symlink while its checkpoint files survived
     (measured twice in the #44 drills); recovery would otherwise restart the
-    train from scratch. An existing link is left untouched.
+    train from scratch. Step dirs left truncated by a mid-save kill are
+    skipped newest-first; an existing link or a checkpoint-less root is a
+    no-op.
     """
     if not checkpoint_root.is_dir():
         return None
@@ -419,18 +457,17 @@ def ensure_step_latest_link(checkpoint_root: Path) -> str | None:
     link = checkpoint_root / STEP_LATEST_NAME
     if link.is_symlink():
         return None
-    if not steps:
-        return None
-    target = steps[-1][1].resolve()
-    os_symlink(target, link)
-    return f"restored {link} -> {target} after an earlier kill left it missing"
-
-
-def os_symlink(target: Path, link: Path) -> None:
-    """Create ``link -> target``, replacing a stale non-link path if present."""
-    if link.exists() and not link.is_symlink():
-        link.unlink()
-    link.symlink_to(target)
+    skipped: list[str] = []
+    for _step_number, step_dir in reversed(steps):
+        if checkpoint_dir_is_intact(step_dir):
+            target = step_dir.resolve()
+            os_symlink(target, link)
+            note = f"restored {link} -> {target} after an earlier kill left it missing"
+            if skipped:
+                note += f" (intact check skipped truncated dirs: {skipped})"
+            return note
+        skipped.append(step_dir.name)
+    return None
 
 
 def _step_state(checkpoint_root: Path) -> tuple[int, str] | None:

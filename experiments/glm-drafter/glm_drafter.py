@@ -44,8 +44,8 @@ from lib.modal_pipeline import (
     build_push_jobs,
     build_train_cmd,
     count_jsonl_lines,
-    ensure_step_latest_link,
     fetch_result_bytes,
+    heal_latest_checkpoint,
     inspect_volume,
     push_jobs_to_hf,
     restore_from_hf,
@@ -441,7 +441,7 @@ def train(
 ) -> None:
     """Train the block-7 GLM drafter with DeepSpec on the cached states."""
     checkpoint_root = Path(HOME) / "checkpoints/deepspec" / exp_name
-    healed = ensure_step_latest_link(checkpoint_root)
+    healed = heal_latest_checkpoint(checkpoint_root)
     if healed:
         _log(f"train: {healed}")
         volume.commit()
