@@ -277,7 +277,6 @@ def write_slice_plan(cache_root: str, total_rows: int, slice_rows: int) -> list[
     tmp_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")
     tmp_path.replace(plan_path)
     return slices
->>>>>>> origin/main
 
 
 def build_train_cmd(

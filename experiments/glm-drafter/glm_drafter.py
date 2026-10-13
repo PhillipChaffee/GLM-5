@@ -894,7 +894,6 @@ def _build_dispatch(
     ramp_arms: str,
     cache_token_budget: int | None,
     cache_data_path: str,
->>>>>>> origin/main
 ) -> dict[str, tuple[Any, dict[str, Any]]]:
     """Map every stage name to its function and flag-derived parameters."""
     return {
@@ -1039,9 +1038,6 @@ def main(
         ramp_arms=ramp_arms,
         cache_token_budget=cache_token_budget,
         cache_data_path=cache_data_path,
-<<<<<<< HEAD
-        cache_output_dir=cache_output_dir,
-=======
     )
     fn, kwargs = dispatch[stage]
     if foreground:
