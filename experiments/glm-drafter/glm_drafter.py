@@ -315,6 +315,55 @@ def regen_ramp(sample_size: int = 256, arms: str = "64,128,256,512") -> None:
     _log(f"regen-ramp done in {elapsed / 60:.1f} min")
 
 
+MIN_AUDIT_ROWS = 2
+
+
+def _audit_corpus(
+    corpus: Path,
+    tokenizer: Any,  # noqa: ANN401 - AutoTokenizer instance, strict-only sanctuary shape
+    think_open_id: int,
+    think_close_id: int,
+) -> tuple[list[int], list[int], list[int]] | None:
+    """Token-stats one regen corpus; None when it is missing or too small to quantify."""
+    import json
+
+    if not corpus.exists():
+        _log(f"audit: {corpus.relative_to(VOL)} missing")
+        return None
+    row_full: list[int] = []
+    row_visible: list[int] = []
+    row_turns: list[int] = []
+    with corpus.open(encoding="utf-8") as handle:
+        for line in handle:
+            sample = json.loads(line)
+            turns_full = turns_visible = turn_count = 0
+            for message in sample.get("conversations", []):
+                content = message.get("content")
+                if message.get("role") != "assistant" or not isinstance(content, str):
+                    continue
+                token_ids = tokenizer(content, add_special_tokens=False)["input_ids"]
+                visible_count = 0
+                inside_think = False
+                for token_id in token_ids:
+                    if token_id == think_open_id:
+                        inside_think = True
+                    elif token_id == think_close_id:
+                        inside_think = False
+                    elif not inside_think:
+                        visible_count += 1
+                turn_count += 1
+                turns_full += len(token_ids)
+                turns_visible += visible_count
+            if turn_count:
+                row_full.append(turns_full)
+                row_visible.append(turns_visible)
+                row_turns.append(turn_count)
+    if len(row_full) < MIN_AUDIT_ROWS:
+        _log(f"audit: {corpus.relative_to(VOL)} has fewer than {MIN_AUDIT_ROWS} usable rows")
+        return None
+    return row_full, row_visible, row_turns
+
+
 @app.function(
     image=regen_image,
     timeout=3600,
@@ -326,7 +375,6 @@ def regen_ramp(sample_size: int = 256, arms: str = "64,128,256,512") -> None:
 )
 def regen_audit() -> None:
     """Retokenize stored regen corpora to pin what the smoke's token counts measured (issue 39)."""
-    import json
     import statistics
 
     from transformers import AutoTokenizer
@@ -334,8 +382,8 @@ def regen_audit() -> None:
     think_open_id = 154841
     think_close_id = 154842
     tokenizer = AutoTokenizer.from_pretrained(TARGET)
-    corpora = [Path(VOL) / "data/regen.jsonl"]
-    corpora.extend(sorted((Path(VOL) / "data/ramp").glob("c*.jsonl")))
+    ramp_corpus = sorted((Path(VOL) / "data/ramp").glob("c*.jsonl"))
+    corpora = [Path(VOL) / "data/regen.jsonl"] + [c for c in ramp_corpus if "_error" not in c.stem]
 
     def _quantiles(seq: list[int]) -> tuple[int, int, int]:
         """Return p50, p90, p99 of a token-count sequence."""
@@ -343,38 +391,10 @@ def regen_audit() -> None:
         return int(marks[49]), int(marks[89]), int(marks[98])
 
     for corpus in corpora:
-        if not corpus.exists():
-            _log(f"audit: {corpus.relative_to(VOL)} missing")
+        audit = _audit_corpus(corpus, tokenizer, think_open_id, think_close_id)
+        if audit is None:
             continue
-        row_full, row_visible, row_turns = [], [], []
-        with corpus.open(encoding="utf-8") as handle:
-            for line in handle:
-                sample = json.loads(line)
-                turns_full = turns_visible = turn_count = 0
-                for message in sample.get("conversations", []):
-                    content = message.get("content")
-                    if message.get("role") != "assistant" or not isinstance(content, str):
-                        continue
-                    token_ids = tokenizer(content, add_special_tokens=False)["input_ids"]
-                    visible_count = 0
-                    inside_think = False
-                    for token_id in token_ids:
-                        if token_id == think_open_id:
-                            inside_think = True
-                        elif token_id == think_close_id:
-                            inside_think = False
-                        elif not inside_think:
-                            visible_count += 1
-                    turn_count += 1
-                    turns_full += len(token_ids)
-                    turns_visible += visible_count
-                if turn_count:
-                    row_full.append(turns_full)
-                    row_visible.append(turns_visible)
-                    row_turns.append(turn_count)
-        if not row_full:
-            _log(f"audit: {corpus.relative_to(VOL)} has no assistant turns")
-            continue
+        row_full, row_visible, row_turns = audit
         p50, p90, p99 = _quantiles(row_full)
         visible_p50, visible_p90, visible_p99 = _quantiles(row_visible)
         label = corpus.relative_to(VOL)
