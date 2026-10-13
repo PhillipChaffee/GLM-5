@@ -48,6 +48,16 @@ The `papers/*.txt` sidecars are the readable full text of every paper; the `.pdf
 
 The DSpark-for-GLM-5.3-Flash wayfinder map is [issue #1](https://github.com/PhillipChaffee/GLM-5/issues/1) on PhillipChaffee/GLM-5; its tickets are that issue's sub-issues.
 
+## Session landing
+
+Every session that changes the repo ends with those changes merged via a PR. Never finish without a PR for changes that need to persist — local commits, unpushed branches, and tracker comments are scaffolding; merged commits are what survives. The house sequence:
+
+1. Commit the session's branch from its worktree, with all gates green on the exact tree being pushed.
+2. Before pushing, if `origin/main` has moved, merge `origin/main` into the branch and re-run the gates (the `base-current-gate.sh` pre-push guard refuses stale bases).
+3. Open the PR, wait for CI to be green, and merge (squash, matching the history convention). Rerun transient CI failures (e.g. timeout-style link-check 503s) once before concluding anything; a red check is never a merge premise.
+4. If the user explicitly asks to hold work unmerged, record the hold as a comment on the ticket naming the branch and the unblocking step — that is the only acceptable unfinished landing.
+5. After the merge, `git worktree remove` the session's worktree and `git branch -d` its branch; hand-off travels through the merged PR, not through a dirty worktree.
+
 ## Agent skills
 
 ### Modal runs
