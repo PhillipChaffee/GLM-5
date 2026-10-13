@@ -7,6 +7,7 @@ place; each app keeps its own stage decorators, constants, and dispatch.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import time
@@ -160,9 +161,19 @@ def build_cache_cmd(
     output_dir: str,
     local_batch_size: int,
     cache_script: str,
+    sample_start: int | None = None,
+    sample_end: int | None = None,
 ) -> list[str]:
-    """Build the target-cache command shared by the pipeline apps."""
-    return [
+    """Build the target-cache command shared by the pipeline apps.
+
+    ``sample_start``/``sample_end`` bound the build to rows ``[start, end)``
+    of the training jsonl (the resumable slice build); both must be given
+    together or both omitted.
+    """
+    if (sample_start is None) != (sample_end is None):
+        msg = "sample_start and sample_end must be given together"
+        raise ValueError(msg)
+    cmd = [
         "python",
         cache_script,
         "--config",
@@ -174,6 +185,79 @@ def build_cache_cmd(
         "--local-batch-size",
         str(local_batch_size),
     ]
+    if sample_start is not None:
+        cmd.extend(["--sample-start", str(sample_start), "--sample-end", str(sample_end)])
+    return cmd
+
+
+def count_jsonl_lines(path: str) -> int:
+    """Count lines of a jsonl file (the slice plan's row total)."""
+    with Path(path).open("rb") as handle:
+        return sum(1 for _ in handle)
+
+
+def plan_cache_slices(total_rows: int, slice_rows: int) -> list[tuple[int, int]]:
+    """Split ``total_rows`` into contiguous ``[start, end)`` slice ranges."""
+    if total_rows < 0:
+        msg = f"total_rows must be non-negative, got {total_rows}"
+        raise ValueError(msg)
+    if slice_rows <= 0:
+        msg = f"slice_rows must be positive, got {slice_rows}"
+        raise ValueError(msg)
+    return [
+        (start, min(start + slice_rows, total_rows)) for start in range(0, total_rows, slice_rows)
+    ]
+
+
+def slice_cache_complete(cache_dir: str) -> bool:
+    """A slice dir is complete iff its canonical manifest loads and validates.
+
+    Runs only where the deepspec package is importable (the deepspec image
+    and the experiment test env); elsewhere the ImportError propagates —
+    the caller must not treat an uncheckable slice as complete.
+    """
+    from deepspec.data.target_cache_dataset import load_target_cache_manifest
+
+    try:
+        load_target_cache_manifest(cache_dir)
+    except Exception:  # noqa: BLE001 - any invalid state means "not complete"
+        return False
+    return True
+
+
+SLICE_PLAN_FILE_NAME = "slice_plan.json"
+
+
+def write_slice_plan(cache_root: str, total_rows: int, slice_rows: int) -> list[tuple[int, int]]:
+    """Write the cache root's slice plan atomically and return it.
+
+    The plan freezes the row set the merged cache will cover: a later run
+    with a different ``slice_rows`` or a grown ``total_rows`` fails loudly
+    instead of silently overlapping already-built slices.
+    """
+    slices = plan_cache_slices(total_rows, slice_rows)
+    plan = {
+        "total_rows": total_rows,
+        "slice_rows": slice_rows,
+        "slices": [list(bounds) for bounds in slices],
+    }
+    plan_path = Path(cache_root) / SLICE_PLAN_FILE_NAME
+    if plan_path.exists():
+        existing: dict[str, object] = json.loads(plan_path.read_text(encoding="utf-8"))
+        if existing != plan:
+            msg = (
+                f"existing slice plan at {plan_path} covers total_rows="
+                f"{existing.get('total_rows')} with slice_rows={existing.get('slice_rows')}; "
+                f"refusing to re-plan with total_rows={total_rows}, slice_rows={slice_rows} — "
+                f"pass --slice-rows {existing.get('slice_rows')} or delete the cache root"
+            )
+            raise RuntimeError(msg)
+        return slices
+    Path(cache_root).mkdir(parents=True, exist_ok=True)
+    tmp_path = Path(f"{plan_path}.tmp")
+    tmp_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+    tmp_path.replace(plan_path)
+    return slices
 
 
 def build_train_cmd(
@@ -186,6 +270,7 @@ def build_train_cmd(
     cache_path: str,
     max_steps: int,
     torch_compile: bool | None = None,
+    checkpointing_steps: int | None = None,
     train_script: str = "train.py",
 ) -> list[str]:
     """Build the drafter-training command shared by the pipeline apps."""
@@ -207,6 +292,8 @@ def build_train_cmd(
     ]
     if torch_compile is not None:
         cmd.extend(["--opts", f"train.torch_compile={torch_compile}"])
+    if checkpointing_steps is not None:
+        cmd.extend(["--opts", f"logging.checkpointing_steps={checkpointing_steps}"])
     if max_steps:
         cmd.extend(["--opts", f"train.max_train_steps={max_steps}"])
     return cmd

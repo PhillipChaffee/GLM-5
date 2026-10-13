@@ -47,7 +47,11 @@ train = {
 
 logging = {
     "logging_steps": 10,
-    "checkpointing_steps": 3000,
+    # Issue #44 cadence decision (Phillip, 2026-10-13): save every ~100
+    # optimizer steps (~53 min at the measured 31.8 s/step) so a crash
+    # replays at most ~1 h of gradient work; per-epoch saves were rejected
+    # as a ~9.3 GPU-h loss window.
+    "checkpointing_steps": 100,
 }
 
 data = {

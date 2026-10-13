@@ -23,7 +23,6 @@ from deepspec.data.target_cache_dataset import (
     build_global_target_cache_shard_map,
     build_target_cache_manifest,
     cleanup_target_cache_tmp_dir,
-    compute_local_sample_range,
     finalize_target_cache_index,
     load_local_cache_write_summary,
     prepare_target_cache_output_dir,
@@ -161,9 +160,42 @@ def parse_args():
     parser.add_argument("--max-shard-bytes", type=int, default=64 * 1024**3)
     parser.add_argument("--local-batch-size", type=int, default=2)
     parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument(
+        "--sample-start",
+        type=int,
+        default=None,
+        help="First dataset row to process (slice mode; requires --sample-end).",
+    )
+    parser.add_argument(
+        "--sample-end",
+        type=int,
+        default=None,
+        help="One past the last dataset row to process (slice mode; requires --sample-start).",
+    )
     cli_args = parser.parse_args()
     config = parse_opts_to_config(cli_args.opts, load_config(cli_args.config))
     return cli_args, config
+
+
+def resolve_sample_range(
+    sample_start: int | None,
+    sample_end: int | None,
+    num_samples: int,
+) -> tuple[int, int]:
+    """Resolve the processed row range: explicit slice bounds or the full set."""
+    if (sample_start is None) != (sample_end is None):
+        msg = "--sample-start and --sample-end must be given together"
+        raise ValueError(msg)
+    if sample_start is None or sample_end is None:
+        return 0, num_samples
+    start, end = sample_start, sample_end
+    if not 0 <= start <= end <= num_samples:
+        msg = (
+            f"invalid sample range [{start}, {end}) for a dataset of {num_samples} rows; "
+            "the range must satisfy 0 <= start <= end <= num_samples"
+        )
+        raise ValueError(msg)
+    return start, end
 
 
 def _write_manifest(
@@ -236,10 +268,10 @@ def main():
     os.makedirs(rank_dir, exist_ok=True)
 
     dataset = JsonLineDataset(data_paths=train_data_paths)
-    local_start, local_end = compute_local_sample_range(
+    local_start, local_end = resolve_sample_range(
+        cli_args.sample_start,
+        cli_args.sample_end,
         num_samples=len(dataset),
-        rank=0,
-        world_size=1,
     )
     local_total_samples = local_end - local_start
 
@@ -367,7 +399,8 @@ def main():
     cleanup_target_cache_tmp_dir(output_dir)
     print(
         f"Prepared target cache at {output_dir} with "
-        f"{num_valid_samples}/{len(dataset)} valid samples.",
+        f"{num_valid_samples}/{local_end - local_start} valid samples "
+        f"(rows [{local_start}, {local_end}) of {len(dataset)}).",
         flush=True,
     )
 
