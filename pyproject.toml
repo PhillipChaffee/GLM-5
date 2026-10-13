@@ -160,6 +160,19 @@ convention = "google"
     "E402",
 ]
 
+"experiments/glm-drafter/budget_probe.py" = [
+    # Same reason as the two Modal apps above: torch/transformers resolve
+    # only inside Modal runtime, so GPU-path imports stay inside the
+    # function that uses them.
+    "PLC0415",
+    # The probe is a GPU transcript emitter: its log channel is print,
+    # which Modal streams per line to the downloaded transcript.
+    "T201",
+    # The shared pipeline lib sits beside the app files, not on the local
+    # default import path; the sys.path shim above the import is deliberate.
+    "E402",
+]
+
 "experiments/lib/modal_pipeline.py" = [
     # Same reason as the two Modal apps above: huggingface_hub resolves
     # only inside Modal runtime, so its imports stay inside the functions
@@ -540,6 +553,7 @@ module = [
     "dflash2_smoke",
     "glm_drafter",
     "dspark_bringup",
+    "budget_probe",
     "generate_train_data_glm",
     "prepare_target_cache_glm",
     "timed_eval_glm",

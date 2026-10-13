@@ -11,6 +11,7 @@ agree on the last-layer payload.
 import argparse
 import json
 import os
+import time
 from dataclasses import dataclass
 
 import torch
@@ -416,6 +417,9 @@ def main():
 
     processed_local_samples = 0
     last_progress_printed = 0
+    capture_rows = 0
+    capture_real_tokens = 0
+    capture_start = time.perf_counter()
     try:
         with torch.no_grad():
             for batch_idx, batch in enumerate(dataloader):
@@ -448,6 +452,8 @@ def main():
                     target_layer_ids=target_layer_ids,
                 )
                 seq_lens = batch["attention_mask"].sum(dim=1).tolist()
+                capture_rows += len(seq_lens)
+                capture_real_tokens += int(batch["attention_mask"].sum())
                 for sample_idx_in_batch, seq_len in enumerate(seq_lens):
                     seq_len = int(seq_len)
                     writer.write_sample(
@@ -469,6 +475,22 @@ def main():
                     last_progress_printed = processed_local_samples
     finally:
         writer.close()
+    capture_seconds = time.perf_counter() - capture_start
+    print(
+        json.dumps(
+            {
+                "batcher": "token-budget" if pack_prefix_counts is not None else "fixed-count",
+                "local_batch_size": int(cli_args.local_batch_size),
+                "cache_token_budget": cli_args.cache_token_budget,
+                "rows": capture_rows,
+                "real_tokens": capture_real_tokens,
+                "seconds": round(capture_seconds, 1),
+                "tok_per_s": round(capture_real_tokens / max(capture_seconds, 1e-9)),
+            },
+            indent=4,
+        ),
+        flush=True,
+    )
     del target_model
     torch.cuda.empty_cache()
     dataset.close()
