@@ -39,6 +39,7 @@ from lib.modal_pipeline import (
     VOLUME_ROOTS,
     build_cache_cmd,
     build_eval_cmd,
+    build_push_jobs,
     build_train_cmd,
     fetch_result_bytes,
     inspect_volume,
@@ -606,33 +607,9 @@ def restore_hf(repo_id: str = HF_ASSET_REPO) -> None:
     secrets=[hf_secret],
     cpu=8,
 )
-def push_to_hf(repo_id: str = "") -> None:
+def push_to_hf(repo_id: str = "", exp_name: str = "") -> None:
     """Upload the cache, regen data, and final checkpoint to an HF dataset repo."""
-    from huggingface_hub import HfApi
-
-    api = HfApi()
-    user = api.whoami()["name"]
-    repo = repo_id or f"{user}/glm-drafter-run"
-    api.create_repo(repo_id=repo, repo_type="dataset", private=False, exist_ok=True)
-    cache_dir = Path(VOL) / "cache"
-    data_dir = Path(VOL) / "data"
-    jobs: list[tuple[Path, str]] = [
-        (item, f"cache/{item.name}") for item in sorted(cache_dir.iterdir()) if item.is_file()
-    ]
-    jobs.extend(
-        (item, f"data/{item.name}") for item in sorted(data_dir.iterdir()) if item.is_file()
-    )
-    ckpt_dir = Path(VOL) / "home/checkpoints/deepspec/glm_drafter_block7_glm53flash_full"
-    if ckpt_dir.exists():
-        step_dirs = sorted(ckpt_dir.glob("step_*"))
-        if step_dirs:
-            final_step = step_dirs[-1]
-            jobs.extend(
-                (final_step / name, f"checkpoints/glm_drafter_block7_glm53flash/{name}")
-                for name in ("model.safetensors", "config.json", "train_config.py")
-                if (final_step / name).exists()
-            )
-    push_jobs_to_hf(repo, jobs, "glm-drafter-run")
+    push_jobs_to_hf(repo_id, build_push_jobs(VOL, exp_name), "glm-drafter-run")
     volume.commit()
 
 
@@ -708,7 +685,7 @@ def _build_dispatch(
         "peek": (peek, {}),
         "fetch": (fetch_result, {"name": tag}),
         "restore-hf": (restore_hf, {"repo_id": repo_id} if repo_id else {}),
-        "push-hf": (push_to_hf, {"repo_id": repo_id}),
+        "push-hf": (push_to_hf, {"repo_id": repo_id, "exp_name": exp_name}),
     }
 
 
