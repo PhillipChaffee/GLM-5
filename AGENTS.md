@@ -68,14 +68,31 @@ then tail the log. An ephemeral `modal run` stops its app when the entrypoint
 completes, which silently kills any `.spawn()`ed call (0 containers, no result,
 no logs); `.remote()` under `--detach` streams logs and survives a dead local
 process. Poll progress with the app's result-peek stage — an empty
-`modal container list` can also mean an image build is still running. Quick CPU
-stages (inspect, fetch) are fine as plain blocking `modal run`. Blackwell GPU
-scarcity is real (2026-10-06: B200 unschedulable for hours): prefer the
-`B200+:N` spec, which falls back to B300 at B200 rates, and record the
-hardware each run actually got. Probe a fresh run with short sleeps (30-60 s)
-until it shows first life — a container in `modal container list`, a log line,
-or a committed result — and only then lengthen the cadence: a long first sleep
-burns wall time on a dead or misconfigured run.
+`modal container list` can also mean an image build is still running.
+
+**Every run gets a boot check within the first ~60 s** — no exempt blocking
+runs. There is no such thing as "quick enough to trust": even a minutes-long
+CPU probe (2026-10-14: an unverified blocking `modal run` sat crash-looping
+for several minutes before being aborted) is launched backgrounded with its
+own log, `nohup uvx modal run ... > <log> 2>&1 &`, and verified before any
+long wait. First life = a container appearing in `modal container list`, a
+first application log line in the log file or `modal app logs <app-id>`, or
+a finished result. The failure cause is almost always in the first minute of
+logs (import errors and local-scope bugs crash before any progress line), so
+on first life, glance at the log head once; a crash loop is an app that
+stays up while its containers restart with no new progress lines.
+
+**Poll on short sleeps, and never sleep while it is unverified.** While a
+run is unverified or stall-suspect, check every 30-60 s; lengthen the
+cadence only after first life shows progress. Two consecutive checks with
+no new logs and no result = treat the run as failed: stop it
+(`modal app stop <app-name-or-id>`), read the head of
+`modal app logs <app-id>` for the first traceback, fix, relaunch. Never
+wait a run out under a timeout on the hope it recovers.
+
+Blackwell GPU scarcity is real (2026-10-06: B200 unschedulable for hours):
+prefer the `B200+:N` spec, which falls back to B300 at B200 rates, and
+record the hardware each run actually got.
 
 ### Issue tracker
 
