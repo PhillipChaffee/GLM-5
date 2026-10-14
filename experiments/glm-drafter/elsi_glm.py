@@ -155,21 +155,26 @@ def capture(
     cpu=8,
     memory=32768,
 )
-def select() -> None:
-    """Stage 3: statistics and ELSI/ELSI-C beam searches over the capture."""
+def select(*, drop_post_norm: bool = False, out_key: str = "select.json") -> None:
+    """Stage 3: statistics and ELSI/ELSI-C beam searches over the capture.
+
+    ``drop_post_norm`` runs the all-raw pool (the post-final-norm column
+    excluded) and ``out_key`` names the report file on /vol/elsi, so the
+    recorded mixed run's select.json is never clobbered.
+    """
     volume.reload()
-    _run(
-        [
-            "python",
-            "scripts/data/elsi_analyze.py",
-            "elsi-select",
-            "--capture-dir",
-            f"{VOL}/elsi/capture",
-            "--out",
-            f"{VOL}/elsi/select.json",
-        ],
-        cwd=DEEPSPEC_DIR,
-    )
+    flags = [
+        "python",
+        "scripts/data/elsi_analyze.py",
+        "elsi-select",
+        "--capture-dir",
+        f"{VOL}/elsi/capture",
+        "--out",
+        f"{VOL}/elsi/{out_key}",
+    ]
+    if drop_post_norm:
+        flags.append("--drop-post-norm")
+    _run(flags, cwd=DEEPSPEC_DIR)
     volume.commit()
 
 
@@ -191,6 +196,8 @@ def _build_dispatch(
     local_batch_size: int,
     output_dir: str,
     key: str,
+    drop_post_norm: bool,
+    out_key: str,
 ) -> dict[str, tuple[Any, dict[str, Any]]]:
     """Map every stage name to its function and flag-derived parameters."""
     return {
@@ -205,7 +212,10 @@ def _build_dispatch(
                 "output_dir": output_dir,
             },
         ),
-        "select": (select, {}),
+        "select": (
+            select,
+            {"drop_post_norm": drop_post_norm, "out_key": out_key},
+        ),
         "fetch": (fetch, {"key": key}),
     }
 
@@ -220,6 +230,8 @@ def main(
     local_batch_size: int = 2,
     output_dir: str = "/vol/elsi/capture",
     key: str = "select.json",
+    drop_post_norm: bool = False,
+    out_key: str = "select.json",
     foreground: bool = False,
 ) -> None:
     """Dispatch one stage; every flag maps to a stage parameter."""
@@ -230,6 +242,8 @@ def main(
         local_batch_size=local_batch_size,
         output_dir=output_dir,
         key=key,
+        drop_post_norm=drop_post_norm,
+        out_key=out_key,
     )
     fn, kwargs = dispatch[stage]
     if foreground:

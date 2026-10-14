@@ -19,6 +19,7 @@ Two CLI entry points drive map ticket #51:
   capture produced by ``elsi_capture_glm.py`` (46 columns: raw folded streams
   0..44 plus the post-final-norm stream 45), with the paper's per-sample
   top-rho predictive-entropy filter applied at capture time.
+  ``--drop-post-norm`` re-runs on the all-raw pool (columns 0..44 only).
 
 Column indexing is shared by the entry points: column ``c < N`` is the raw
 (folded) output of decoder layer ``c``; column ``N`` (the 46th when N=45) is
@@ -44,11 +45,21 @@ from itertools import combinations
 
 CHUNK_TOKENS = 32
 POST_NORM_LABEL = "postN"
+# The post-norm reads reference raw43/raw44/postN by id, so they can only be
+# printed for captures with that many raw columns.
+POST_NORM_READS_MIN_COLUMNS = 45
 SANITY_SAMPLES = 3
+# Kbeam = 10 is the paper's stated value (main text, citing supplementary
+# fig. S3); Kexpand and Kpool have no stated value in the accessible paper
+# text and are harness assumptions (recorded into select-report meta).
 BEAM_EXPAND = 10
 BEAM_WIDTH = 10
 BEAM_POOL = 10
 POOLED_VIEWS = (32, 256)
+# Select-stage granularities: 839 is the recorded capture's chunk count
+# (26,834 retained tokens / 32 = 839 chunks), so the 839 view is the
+# pooled-grid identity: one rep row per 32-token chunk sum.
+SELECT_POOLED_VIEWS = (32, 256, 839)
 BASELINE_COLUMNS = (5, 15, 30, 42)
 PROGRESS_EVERY = 64
 
@@ -93,7 +104,7 @@ class StreamAccumulator:
         """Scatter-add an ``[N, dim]`` fp32 token block at pooled positions."""
         if pooled_positions.numel() == 0:
             return
-        need = int(pooled_positions.amax().item()) + 1
+        need = int(pooled_positions.amax().item()) // CHUNK_TOKENS + 1
         self._ensure(need)
         chunk_ids = (pooled_positions // CHUNK_TOKENS).to(torch.int64)
         self._sums.index_add_(0, chunk_ids, tokens)
@@ -184,7 +195,11 @@ def matrix_entropy_nats(gram: torch.Tensor) -> float:
     total = float(eigen.sum())
     if total <= 0.0:
         return 0.0
-    weights = eigen[eigen > 0.0] / total
+    # filter the normalized shares, not the raw eigenvalues: a subnormal
+    # eigenvalue under a huge total rounds its share to 0.0, whose log would
+    # NaN the sum; a zero share contributes nothing by convention anyway.
+    shares = eigen / total
+    weights = shares[shares > 0.0]
     return float(-(weights * torch.log(weights)).sum())
 
 
@@ -298,24 +313,33 @@ def elsi_rank(
     return _top_beam([(stats.set_entropy(members), members) for members in beam], k_beam)
 
 
-def _cka_transition_distances(
+def _conditional_cka_transitions(
     stats: StatsView, parent: frozenset[int], columns: list[int]
 ) -> dict[int, float]:
-    """Per-candidate CKA-transition distance for one beam parent (paper [C2]).
+    """Per-candidate conditional-CKA transition score (paper Alg. 2 [C2]).
 
-    One signature row per column holds the centered Gram of the concatenation
-    with that column added; the score is the Frobenius distance to the
-    previous column's row, mirroring the paper's ``delta_L(r)`` layer-order
-    law.
+    Rows live in the conditional matrix M_L(i, j) = CKA(centered set Gram of
+    the parents' set union with column i (then j)); a column already in the
+    parent contributes a plain parent row (its Gram is not doubled). A
+    candidate's score is delta_L(r) = ||M_L(r,:) - M_L(r-1,:)||_2 against the
+    previous column id's row, so an exact content duplicate of the adjacent
+    lower column coincides with that column's row and scores exactly 0.0
+    (their Grams are bit-identical copies), while the harness's earlier
+    surrogate scored Frobenius scale differences instead.
     """
-    distances: dict[int, float] = {}
-    previous: torch.Tensor | None = None
-    for column in columns:
-        signature = stats.set_centered(parent | {column})
-        if previous is not None:
-            distances[column] = float((signature - previous).pow(2).sum().sqrt())
-        previous = signature
-    return distances
+    base = stats.set_centered(parent)
+    added = {
+        column: base if column in parent else base + stats[column].centered for column in columns
+    }
+    rows = {
+        column: torch.tensor([cka_of_grams(added[column], added[other]) for other in columns])
+        for column in columns
+    }
+    scores: dict[int, float] = {}
+    for index in range(1, len(columns)):
+        previous = columns[index - 1]
+        scores[columns[index]] = float((rows[columns[index]] - rows[previous]).pow(2).sum().sqrt())
+    return scores
 
 
 def elsi_c_rank(
@@ -325,21 +349,25 @@ def elsi_c_rank(
     k_pool: int = BEAM_POOL,
     k_beam: int = BEAM_WIDTH,
 ) -> list[tuple[float, frozenset[int]]]:
-    """Paper Algorithm 2 (ELSI-C): entropy init, CKA-transition expansion.
+    """Paper Algorithm 2 (ELSI-C): entropy init, conditional-CKA expansion.
 
-    One signature row per column holds the CKA signature of the concatenation
-    with that column added; a candidate's transition score is the Frobenius
-    distance to the previous column's row, mirroring the paper's ``delta_L(r)``
-    layer-order law. Top-``k_pool`` candidates per parent feed the beam;
-    dedup and entropy pruning close every depth.
+    The transition score of candidate ``r`` is the Frobenius norm of the row
+    difference of the paper's conditional-CKA matrix over strict set unions
+    (``delta_L(r)``), so a candidate duplicating the adjacent lower column's
+    content scores ~0 and is not pooled. The lowest column id gets no
+    ``delta_L`` row (there is no r-1) and is therefore never pooled.
+    Top-``k_pool`` candidates per parent feed the beam; dedup and entropy
+    pruning close every depth.
     """
     beam = _seed_beam(stats, columns, k_beam)
     for _depth in range(2, size + 1):
         proposals: dict[frozenset[int], float] = {}
         for parent in beam:
-            distances = _cka_transition_distances(stats, parent, columns)
+            distances = _conditional_cka_transitions(stats, parent, columns)
             pool = sorted(
-                (distances.get(column, 0.0), column) for column in columns if column not in parent
+                (distances[column], column)
+                for column in columns
+                if column not in parent and column in distances
             )[-k_pool:]
             for _distance, column in pool:
                 child = parent | {column}
@@ -599,11 +627,16 @@ def _enumerated_entry(
 
 
 def _cka_matrix_values(stats: StatsView) -> list[list[float]]:
-    """Full pairwise CKA table over the view's columns, in id order."""
+    """Full pairwise CKA table over the view's columns, in id order.
+
+    Pairs are computed in float64 so an identical pair reports its exact 1.0
+    (fp32 roundoff printed the two-sided band 0.999996-1.000005 on the
+    recorded data).
+    """
     columns = [stats[column] for column in sorted(stats.items)]
+    grams = [column_stat.centered.double() for column_stat in columns]
     return [
-        [round6(cka_of_grams(row_stat.centered, column_stat.centered)) for column_stat in columns]
-        for row_stat in columns
+        [round6(cka_of_grams(row_gram, column_gram)) for column_gram in grams] for row_gram in grams
     ]
 
 
@@ -641,24 +674,59 @@ def run_stage1(cache_dir: str, out: str) -> None:
     log(f"[stage1] wrote {out_path}")
 
 
+def _baseline_reps_for(
+    sums: torch.Tensor, counts: torch.Tensor, u: int, *, normalized: bool
+) -> torch.Tensor:
+    """Baseline reps at granularity ``u`` (optionally row-normalized)."""
+    reps, _row_counts = chunk_rep_rows(sums, counts, u)
+    if normalized:
+        norms = reps.norm(dim=-1, keepdim=True).clamp_min(1.0e-12)
+        reps = reps / norms
+    return reps.clone()
+
+
+def _assert_shared_grid(
+    sums: torch.Tensor, counts: torch.Tensor, column: int, reference: torch.Tensor | None
+) -> torch.Tensor | None:
+    """Check one column's pooled grid; counts identity is the first (or kept).
+
+    Raises when sums and counts rows disagree or the column's chunk counts
+    differ from the reference column's: the additive set-Gram identity mixes
+    Grams from different pooled grids silently otherwise.
+    """
+    if sums.shape[0] != counts.shape[0]:
+        msg = f"column {column}: sums rows {sums.shape[0]} != counts rows {counts.shape[0]}"
+        raise ValueError(msg)
+    if reference is None:
+        return counts
+    if not torch.equal(counts, reference):
+        msg = (
+            f"column {column} pooled chunk grid differs from column 0 "
+            "(counts identity must hold for the additive set-Gram identity)"
+        )
+        raise ValueError(msg)
+    return reference
+
+
 def _load_capture_views(
     capture_path: Path, num_columns: int, variants: list[tuple[str, int, bool]]
 ) -> tuple[dict[str, StatsView], dict[tuple[str, int], torch.Tensor]]:
-    """Load every column's pooled Gram metas plus the baseline rep copies."""
+    """Load every column's pooled Gram metas plus the per-(table-key) baseline reps."""
     pending: dict[str, list[ColumnGrams]] = {key: [] for key, _, _ in variants}
     baseline_reps: dict[tuple[str, int], torch.Tensor] = {}
+    reference_counts: torch.Tensor | None = None
     for column in range(num_columns):
         path = capture_path / f"col_{column:03d}.pt"
         bundle = torch.load(path, map_location="cpu", weights_only=True)
         sums = bundle["sums"]
         counts = bundle["counts"]
+        reference_counts = _assert_shared_grid(sums, counts, column, reference_counts)
         for key, u, normalized in variants:
             pending[key].append(column_grams(sums, counts, column, u, row_normalized=normalized))
-        if column in BASELINE_COLUMNS:
-            reps, _row_counts = chunk_rep_rows(sums, counts, POOLED_VIEWS[-1])
-            baseline_reps[("raw", column)] = reps.clone()
-            norms = reps.norm(dim=-1, keepdim=True).clamp_min(1.0e-12)
-            baseline_reps[("rownorm", column)] = (reps / norms).clone()
+            if column in BASELINE_COLUMNS:
+                baseline_reps[(key, column)] = _baseline_reps_for(
+                    sums, counts, u, normalized=normalized
+                )
         if (column + 1) % 8 == 0:
             log(f"[select] column {column + 1}/{num_columns}")
         del bundle, sums, counts
@@ -666,19 +734,33 @@ def _load_capture_views(
     return views, baseline_reps
 
 
-def run_select(capture_dir: str, out: str) -> None:
-    """Stage-3 CLI body: statistics and ELSI/ELSI-C over the captured columns."""
+def _select_variants(pooled_views: tuple[int, ...]) -> list[tuple[str, int, bool]]:
+    """Interleaved raw/row-normalized variants for every pooled granularity."""
+    variants: list[tuple[str, int, bool]] = []
+    for u in pooled_views:
+        variants.append((f"{u}", u, False))
+        variants.append((f"{u}_rownorm", u, True))
+    return variants
+
+
+def run_select(capture_dir: str, out: str, *, drop_post_norm: bool = False) -> None:
+    """Stage-3 CLI body: statistics and ELSI/ELSI-C over the captured columns.
+
+    ``drop_post_norm`` builds the all-raw pool (columns 0..num_layers-1, the
+    post-final-norm column excluded entirely) for the mixed-canon re-analysis.
+    """
     capture_path = Path(capture_dir)
     meta = _load_json(capture_path / "capture_meta.json")
     num_layers = int(meta["num_layers"])
     num_columns = int(meta["num_columns"])
-    variants: list[tuple[str, int, bool]] = [
-        ("32", 32, False),
-        ("32_rownorm", 32, True),
-        ("256", 256, False),
-        ("256_rownorm", 256, True),
-    ]
-    views, baseline_reps = _load_capture_views(capture_path, num_columns, variants)
+    if drop_post_norm:
+        if num_columns != num_layers + 1:
+            msg = f"capture holds {num_columns} columns, expected num_layers+1 for the all-raw drop"
+            raise ValueError(msg)
+        num_columns = num_layers
+    views, baseline_reps = _load_capture_views(
+        capture_path, num_columns, _select_variants(SELECT_POOLED_VIEWS)
+    )
     arms = [
         ("7-union [1,12,23,34,42,43,44*]", [1, 12, 23, 34, 42, 43, num_layers]),
         ("5-stock [1,12,23,34,42]", [1, 12, 23, 34, 42]),
@@ -687,37 +769,55 @@ def run_select(capture_dir: str, out: str) -> None:
         ("base4 [1,12,23,34]", [1, 12, 23, 34]),
         ("DFlash2 convention [5,14,24,33,42]", [5, 14, 24, 33, 42]),
     ]
+    arms = [arm for arm in arms if all(column < num_columns for column in arm[1])]
     per_u_tables: dict[str, Any] = {}
-    chances: dict[str, dict[str, Any]] = {
-        variant: chance_baseline(
-            {column: baseline_reps[(variant, column)] for column in BASELINE_COLUMNS}
-        )
-        for variant in ("raw", "rownorm")
-    }
     for key, stats in views.items():
         labels = [column_label(column, num_layers) for column in range(num_columns)]
-        per_u_tables[key] = _select_entry(stats, labels, num_columns, num_layers, arms)
-        if key in ("256", "256_rownorm"):
-            variant = "rownorm" if key.endswith("_rownorm") else "raw"
-            per_u_tables[key]["chance_baseline"] = chances[variant]
-    write_json(
-        {
-            "meta": {"capture_dir": str(capture_path), **meta},
-            "tables_by_u": per_u_tables,
+        entry = _select_entry(stats, labels, num_layers, arms)
+        baseline = {
+            column: baseline_reps[(key, column)]
+            for column in BASELINE_COLUMNS
+            if (key, column) in baseline_reps
+        }
+        entry["chance_baseline"] = chance_baseline(baseline)
+        per_u_tables[key] = entry
+    payload_meta: dict[str, Any] = {
+        "capture_dir": str(capture_path),
+        "pool": (
+            "all-raw: only the raw folded stream columns enter the pool "
+            "(the post-final-norm column is excluded entirely)"
+            if drop_post_norm
+            else "mixed: raw folded streams plus the post-final-norm stream"
+        ),
+        "search_constants": {
+            "k_beam": BEAM_WIDTH,
+            "k_expand": BEAM_EXPAND,
+            "k_pool": BEAM_POOL,
+            "k_beam_source": "paper-stated (main text, citing supplementary fig. S3: Kbeam=10)",
+            "k_expand_k_pool_source": (
+                "harness assumption; no value for Kexpand/Kpool is stated in "
+                "the accessible paper text"
+            ),
         },
-        Path(out),
-    )
+        **meta,
+    }
+    write_json({"meta": payload_meta, "tables_by_u": per_u_tables}, Path(out))
     log(f"[select] wrote {Path(out)}")
 
 
 def _select_entry(
     stats: StatsView,
     labels: list[str],
-    num_columns: int,
     num_layers: int,
     arms: list[tuple[str, list[int]]],
 ) -> dict[str, Any]:
-    """One select payload: layers, CKA matrix, arms, beams, post-norm reads."""
+    """One select payload: layers, CKA matrix, arms, beams, post-norm reads.
+
+    The printed CKA matrix is computed in float64 so the diagonal reads
+    exactly 1.0 instead of fp32's two-sided ±5e-6 roundoff band.
+    """
+    num_columns = len(labels)
+    values = _cka_matrix_values(stats)
     beam_entries = {
         f"elsi_m{size}_top": [
             {"entropy": round6(score), "labels": labels_of(members, num_layers)}
@@ -732,24 +832,26 @@ def _select_entry(
         ]
         for size in (5, 7)
     }
-    return {
+    payload: dict[str, Any] = {
         "per_layer_s1_nats": {
             labels[column]: round6(stats[column].entropy) for column in range(num_columns)
         },
-        "cka_matrix": {"labels": labels, "values": _cka_matrix_values(stats)},
-        "transition_peaks": _transition_peaks(_cka_matrix_values(stats)),
+        "cka_matrix": {"labels": labels, "values": values},
+        "transition_peaks": _transition_peaks(values),
         "standing_sets": rank_scores(stats, arms),
-        "post_norm_reads": {
+        **beam_entries,
+        **beam_c_entries,
+    }
+    if num_layers < num_columns and num_columns >= POST_NORM_READS_MIN_COLUMNS:
+        payload["post_norm_reads"] = {
             "cka_raw43_postN": round6(stats.cka([43], [num_layers])),
             "cka_raw44_postN": round6(stats.cka([44], [num_layers])),
             "cka_raw43_raw44": round6(stats.cka([43], [44])),
             "s1_5stock": round6(stats.set_entropy([1, 12, 23, 34, 42])),
             "s1_5stock_plus_43": round6(stats.set_entropy([1, 12, 23, 34, 42, 43])),
             "s1_5stock_plus_postN": round6(stats.set_entropy([1, 12, 23, 34, 42, num_layers])),
-        },
-        **beam_entries,
-        **beam_c_entries,
-    }
+        }
+    return payload
 
 
 def chance_baseline(baseline_reps: dict[int, torch.Tensor]) -> dict[str, Any]:
@@ -800,11 +902,13 @@ def centered_gram_of_rows(reps: torch.Tensor) -> torch.Tensor:
 
 
 def _transition_peaks(cka_values: list[list[float]]) -> list[dict[str, Any]]:
-    """Per-layer CKA transition deltas from the pairwise matrix (paper sec 3.2).
+    """Per-layer CKA transition deltas from the pairwise matrix (paper Eq. 8).
 
     ``values[i][j]`` is CKA(column i, column j); the transition at boundary
-    ``i -> i+1`` is the Frobenius norm of the row difference over the other
-    columns, mirroring the paper's ``delta_l = ||M_{l+1,:} - M_{l,:}||_2``.
+    ``i -> i+1`` is the full-row ``delta_l = ||M_{l+1,:} - M_{l,:}||_2``, self
+    and adjacent entries included exactly as Eq. 8 defines it (measured on
+    the recorded data: top-5 peak boundaries and order unchanged, large
+    boundary deltas shifted ~2-9%, deep-tail deltas under ~2.3%).
     Returns every boundary sorted by delta descending.
     """
     deltas: list[tuple[float, int]] = []
@@ -812,9 +916,7 @@ def _transition_peaks(cka_values: list[list[float]]) -> list[dict[str, Any]]:
     for left in range(count - 1):
         right = left + 1
         squared = [
-            (cka_values[right][index] - cka_values[left][index]) ** 2
-            for index in range(count)
-            if index not in (left, right)
+            (cka_values[right][index] - cka_values[left][index]) ** 2 for index in range(count)
         ]
         deltas.append((float(sum(squared)) ** 0.5, left))
     deltas.sort(key=lambda item: item[0], reverse=True)
@@ -840,11 +942,16 @@ def main() -> None:
     )
     select.add_argument("--capture-dir", required=True, help="capture output directory.")
     select.add_argument("--out", required=True, help="report JSON path.")
+    select.add_argument(
+        "--drop-post-norm",
+        action="store_true",
+        help="build the all-raw pool: exclude the post-final-norm column entirely.",
+    )
     args = parser.parse_args()
     if args.command == "stage1-cache":
         run_stage1(args.cache_dir, args.out)
     else:
-        run_select(args.capture_dir, args.out)
+        run_select(args.capture_dir, args.out, drop_post_norm=args.drop_post_norm)
 
 
 if __name__ == "__main__":

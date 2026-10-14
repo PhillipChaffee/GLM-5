@@ -16,6 +16,7 @@ from elsi_analyze import (
     CHUNK_TOKENS,
     StatsView,
     StreamAccumulator,
+    _conditional_cka_transitions,
     chunk_rep_rows,
     cka_of_grams,
     column_grams,
@@ -79,6 +80,35 @@ def test_chunk_rep_rows_matches_direct_token_means() -> None:
     assert torch.allclose(row_counts, torch.tensor([64.0, 33.0]))
     assert torch.allclose(reps[0], tokens[0:64].mean(0), rtol=1e-5, atol=1e-5)
     assert torch.allclose(reps[1], tokens[64:97].mean(0), rtol=1e-5, atol=1e-5)
+
+
+def test_chunk_rep_rows_identity_at_u_equals_chunks() -> None:
+    """When u equals the chunk count, reps are the per-chunk means.
+
+    That is the 839 view of the recorded capture (26,834 retained tokens ->
+    839 chunks): fewer pools cannot beat the pooled-grid granularity. Equal
+    up to fp32 cumsum roundoff; the cumsum/diff roundtrip is not bitwise.
+    """
+    torch.manual_seed(13)
+    chunks = 64
+    sums = torch.randn(chunks, 12)
+    counts = torch.tensor([32.0] * (chunks - 1) + [18.0])
+    reps, row_counts = chunk_rep_rows(sums, counts, chunks)
+    assert torch.equal(row_counts, counts)
+    assert torch.allclose(reps, sums / counts.clamp_min(1.0).unsqueeze(1), rtol=1e-5, atol=1e-5)
+
+
+def test_entropy_subnormal_share_guard() -> None:
+    """A subnormal eigen under a huge total cannot turn a zero share into NaN.
+
+    1e-43 is representable in fp32, but its share of the 1e12 total underflows
+    to exactly 0.0, whose log would poison the old raw-eigenvalue filter; the
+    correct Renyi-1 read for this spectrum is the rank-1 answer 0.0.
+    """
+    gram = torch.diag(torch.tensor([1.0e12, 1.0e-43], dtype=torch.float32))
+    result = matrix_entropy_nats(gram)
+    assert not math.isnan(result)
+    assert result == pytest.approx(0.0, abs=1e-9)
 
 
 def test_entropy_known_answers() -> None:
@@ -155,6 +185,22 @@ def _center_gram_rows(reps: torch.Tensor) -> torch.Tensor:
     return zero_mean @ zero_mean.T
 
 
+def test_accumulator_sizes_buffers_in_chunks() -> None:
+    """Buffer rows are chunk rows: 150k tokens must not allocate 150k rows."""
+    torch.manual_seed(23)
+    dim = 8
+    acc = StreamAccumulator(dim)
+    limit = 150_000
+    for start in range(0, limit, 700):
+        stop = min(start + 700, limit)
+        acc.add(torch.arange(start, stop), torch.randn(stop - start, dim))
+    # 4688 chunks are needed; the 4096 floor grew once (doubling) to 8192 rows
+    assert acc._sums.shape[0] == 8192
+    sums, counts = acc.snapshot()
+    assert sums.shape[0] == (limit + CHUNK_TOKENS - 1) // CHUNK_TOKENS
+    assert float(counts.sum()) == limit
+
+
 def test_elsi_planted_pair_and_determinism() -> None:
     """ELSI picks two rich spectra over a rank-1 filler; repeats deterministically."""
     torch.manual_seed(31)
@@ -173,3 +219,26 @@ def test_elsi_planted_pair_and_determinism() -> None:
     c_repeat = elsi_c_rank(stats, [0, 1, 2], 3)
     assert c_ranked == c_repeat
     assert all(len(members) == 3 for _score, members in c_ranked)
+
+
+def test_elsi_c_duplicate_scores_zero_and_pool_picks_independent() -> None:
+    """Paper Alg. 2 [C2]: a member's duplicate candidate scores 0.0 and loses.
+
+    Column 1 is an exact copy of column 0, so for parent {candidate 0} the
+    duplicate's conditional-CKA row coincides with column 0's own row and
+    delta_1 == 0.0 exactly, while the independent candidate scores far above
+    0 and the depth-2 beam prefers the independent pair.
+    """
+    torch.manual_seed(41)
+    originals = [torch.randn(32, 16), torch.randn(32, 16)]
+    columns = [originals[0], originals[0].clone(), originals[1]]
+    stats = StatsView(
+        [column_grams(reps, torch.ones(32), index, 32) for index, reps in enumerate(columns)]
+    )
+    deltas = _conditional_cka_transitions(stats, frozenset({0}), [0, 1, 2])
+    assert set(deltas) == {1, 2}
+    assert deltas[1] == pytest.approx(0.0, abs=1e-12)
+    assert deltas[2] > 0.05
+    ranked = elsi_c_rank(stats, [0, 1, 2], 2)
+    assert all(len(members) == 2 for _score, members in ranked)
+    assert ranked[0][1] == frozenset({0, 2})
