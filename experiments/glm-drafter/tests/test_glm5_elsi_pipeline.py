@@ -11,10 +11,14 @@ import json
 import math
 from typing import TYPE_CHECKING
 
+import elsi_analyze
+import pytest
 import torch
 from elsi_analyze import (
     CHUNK_TOKENS,
+    POST_NORM_LABEL,
     CacheSource,
+    matrix_entropy_nats,
     run_select,
     stage1_accumulate,
     stage1_tables,
@@ -109,7 +113,15 @@ def test_stage1_accumulate_and_tables(tmp_path: Path) -> None:
             assert len(mapped) == len(asserted[0]["members"])
 
 
-def test_select_loader_against_fabricated_capture(tmp_path: Path) -> None:
+def test_select_loader_against_fabricated_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Select-loader checks on the fabricated capture at u=32.
+
+    Structural only: the full-fidelity u=256/839 beams run on the Modal
+    stage, not in unit time.
+    """
+    monkeypatch.setattr(elsi_analyze, "SELECT_POOLED_VIEWS", (32,))
     capture_dir = tmp_path / "capture"
     capture_dir.mkdir()
     num_layers = 45
@@ -138,10 +150,15 @@ def test_select_loader_against_fabricated_capture(tmp_path: Path) -> None:
     run_select(str(capture_dir), str(out))
     report = json.loads(out.read_text())
     assert report["meta"]["num_columns"] == num_columns
+    constants = report["meta"]["search_constants"]
+    assert constants["k_beam"] == 10
+    assert constants["k_beam_source"].startswith("paper-stated")
+    assert constants["k_expand"] == 10
+    assert constants["k_expand_k_pool_source"] != ""
     for view_key, view_payload in report["tables_by_u"].items():
         assert view_key in {"32", "32_rownorm", "256", "256_rownorm"}
         labels = view_payload["cka_matrix"]["labels"]
-        assert labels[-1] == "postN"
+        assert labels[-1] == POST_NORM_LABEL
         assert len(labels) == num_columns
         assert len(view_payload["standing_sets"]) == 6
         for beam_key in ("elsi_m5_top", "elsi_m7_top", "elsi_c_m5_top", "elsi_c_m7_top"):
@@ -149,6 +166,100 @@ def test_select_loader_against_fabricated_capture(tmp_path: Path) -> None:
                 assert len(entry["labels"]) in (5, 7)
         reads = view_payload["post_norm_reads"]
         assert set(reads) >= {"cka_raw43_postN", "cka_raw44_postN", "cka_raw43_raw44"}
+        chance = view_payload["chance_baseline"]
+        assert chance["band"]["min"] <= chance["band"]["max"]
+        assert set(chance["columns"]) == {5, 15, 30, 42}
+
+
+def test_select_grid_assert_rejects_mismatched_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A column whose pooled chunk grid differs from column 0 fails the load."""
+    monkeypatch.setattr(elsi_analyze, "SELECT_POOLED_VIEWS", (32,))
+    capture_dir = tmp_path / "capture"
+    capture_dir.mkdir()
+    for column in range(4):
+        sums = torch.arange(6 * HIDDEN, dtype=torch.float32).reshape(6, HIDDEN)
+        counts = torch.tensor([CHUNK_TOKENS] * 6, dtype=torch.float32)
+        if column == 3:  # one dropped chunk: a different pooled grid
+            sums = torch.arange(5 * HIDDEN, dtype=torch.float32).reshape(5, HIDDEN)
+            counts = torch.tensor([CHUNK_TOKENS] * 5, dtype=torch.float32)
+        torch.save({"sums": sums, "counts": counts}, capture_dir / f"col_{column:03d}.pt")
+    (capture_dir / "capture_meta.json").write_text(
+        json.dumps({"num_layers": 3, "num_columns": 4, "rho": 0.3}) + "\n"
+    )
+    with pytest.raises(ValueError, match="pooled chunk grid"):
+        run_select(str(capture_dir), str(tmp_path / "select.json"))
+
+
+def test_select_all_raw_pool_drops_post_norm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--drop-post-norm: labels keep rawN for all columns, postN arms/reads go."""
+    monkeypatch.setattr(elsi_analyze, "SELECT_POOLED_VIEWS", (32,))
+    capture_dir = tmp_path / "capture"
+    capture_dir.mkdir()
+    num_layers, num_columns = 45, 46
+    for column in range(num_columns):
+        sums = torch.arange(6 * HIDDEN, dtype=torch.float32).reshape(6, HIDDEN) + 7.0 * column
+        counts = torch.tensor([CHUNK_TOKENS] * 6, dtype=torch.float32)
+        torch.save({"sums": sums, "counts": counts}, capture_dir / f"col_{column:03d}.pt")
+    (capture_dir / "capture_meta.json").write_text(
+        json.dumps(
+            {
+                "num_layers": num_layers,
+                "num_columns": num_columns,
+                "num_rows": 4,
+                "rho": 0.3,
+                "max_length": 2048,
+            }
+        )
+        + "\n"
+    )
+    out = tmp_path / "select_allraw.json"
+    run_select(str(capture_dir), str(out), drop_post_norm=True)
+    report = json.loads(out.read_text())
+    assert "post-final-norm column is excluded entirely" in report["meta"]["pool"]
+    for view_payload in report["tables_by_u"].values():
+        labels = view_payload["cka_matrix"]["labels"]
+        assert labels[-1] == "raw44"
+        assert len(labels) == 45
+        assert "post_norm_reads" not in view_payload
+        arm_names = {arm["name"] for arm in view_payload["standing_sets"]}
+        assert arm_names == {
+            "5-stock [1,12,23,34,42]",
+            "6-stock [1,12,23,34,42,43]",
+            "base4 [1,12,23,34]",
+            "DFlash2 convention [5,14,24,33,42]",
+        }
+
+
+def test_select_identity_pooling_u_equals_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With u == chunk count the 839-style grid leaves each rep row a chunk mean."""
+    monkeypatch.setattr(elsi_analyze, "SELECT_POOLED_VIEWS", (64,))
+    capture_dir = tmp_path / "capture"
+    capture_dir.mkdir()
+    chunks = 64
+    torch.manual_seed(5)
+    for column in range(5):
+        sums = torch.randn(chunks, HIDDEN)
+        counts = torch.tensor([CHUNK_TOKENS] * (chunks - 1) + [18.0], dtype=torch.float32)
+        torch.save({"sums": sums, "counts": counts}, capture_dir / f"col_{column:03d}.pt")
+    (capture_dir / "capture_meta.json").write_text(
+        json.dumps({"num_layers": 4, "num_columns": 5, "rho": 0.3}) + "\n"
+    )
+    out = tmp_path / "select.json"
+    run_select(str(capture_dir), str(out))
+    report = json.loads(out.read_text())
+    per_layer = report["tables_by_u"]["64"]["per_layer_s1_nats"]
+    for column in range(4):
+        bundle = torch.load(capture_dir / f"col_{column:03d}.pt", weights_only=True)
+        reps = bundle["sums"] / bundle["counts"].unsqueeze(1)  # exact pooled-grid identity
+        expected = matrix_entropy_nats(reps @ reps.T)
+        # tol: the loader path goes through an fp32 cumsum/diff roundtrip
+        assert per_layer[f"raw{column}"] == pytest.approx(expected, abs=1e-4)
 
 
 def test_capture_pooling_matches_reference(tmp_path: Path) -> None:

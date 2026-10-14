@@ -101,8 +101,10 @@ The full 46x46 centered-CKA matrix is `/vol/elsi/select.json`
 Key numbers (u=256 rownorm — the fair view; chance band 0.004-0.017):
 
 - **CKA(raw43, raw44) = 0.985** vs **CKA(raw43, postN) = 0.419** and
-  **CKA(raw44, postN) = 0.409/0.334** (raw/rownorm). The final RMS norm is
-  *not* a direction-only rescale at the Gram level: the per-token scalar s_i
+  **CKA(raw44, postN) = 0.334 raw / 0.409 rownorm** (verified from the
+  shipped select.json; an earlier draft of this bullet swapped the two
+  annotations). The final RMS norm is *not* a direction-only rescale at the
+  Gram level: the per-token scalar s_i
   and gain g reweight each row pair by s_i s_j, visibly restructuring the
   Gram. The serving-side consequence is established: a pre-norm capture
   (the naive Kimi-seam trap) delivers genuinely different content than the
@@ -116,8 +118,11 @@ Key numbers (u=256 rownorm — the fair view; chance band 0.004-0.017):
   {25-29}+postN) — the ranking prior is real but its set identity is not
   stable across the pooled granularity, consistent with treating ELSI as a
   prior and the smoke A/B as the decider (#33's own caveat).
-- In no view did ELSI propose a set that beats the pre-registered
-  5-spread on the fair read.
+- Ranking-wise (review-corrected wording, 2026-10-14): no single ELSI pick
+  dominates the pre-registered 5-spread across all windows, and 5-spread
+  ranks first among the pre-registered arms in every view. ELSI's
+  single-window picks did beat the 5-spread score within individual
+  windows — the original sentence on this bullet over-reached.
 
 ## The ≤3 proposed A/B arms (for the smoke A/B, ticket 52)
 
@@ -169,6 +174,65 @@ the parity gate checks for real content differences, not cosmetic roundoff.
   rejection — the map already records the B300 rejection). H200:4 (sm_90)
   scheduled instantly and ran correctly; `elsi_glm.py` pins H200:4 with the
   reason in a comment.
+
+## Harness corrections and decisions (GitHub issue 81, 2026-10-14)
+
+From the five-way adversarial review of this analysis against
+arXiv:2610.12939. Recorded-number reads above stay valid (every headline
+re-verified from the shipped JSONs); the harness changes below are
+prophylactic or fidelity-restoring and affect future runs.
+
+- **NaN guard (matrix entropy).** Matrix-entropy eigen-share filtering now
+  drops shares rounded to exactly 0.0 (a subnormal eigenvalue under a huge
+  total used to produce `0 * log(0) = NaN` in the u>chunks regime).
+  Bit-identical everywhere nothing underflows.
+- **Accumulator capacity.** `StreamAccumulator` buffers are chunk rows, not
+  token rows: the 32x RAM over-allocation is gone (recorded numbers never
+  depended on it).
+- **U-scale stability of the chance band.** The recorded chance band
+  0.001-0.017 is valid only at u=256 (row count drives the finite-sample
+  floor); the harness now recomputes the band at every pooled granularity.
+- **Grid assert.** The column loader now raises unless every column shares
+  one pooled chunk grid (counts identity), which the additive set-Gram
+  identity assumes silently; previously an inconsistent capture would mix.
+- **Search constants recorded.** select-report meta now carries
+  `search_constants`: Kbeam = 10 is the paper's stated value (main text,
+  citing supplementary fig. S3); Kexpand = Kpool = 10 are harness
+  assumptions (no value stated in the accessible text, flagged by two
+  reviewers).
+- **ELSI-C transition rule — DECISION: implement the paper's rows.** The
+  recorded elsi_c entries above were produced by a surrogate (Frobenius
+  distance between consecutive candidates' *centered Grams*), which is
+  scale/rotation sensitive: under it, a candidate duplicating a beam member
+  scores ~16.0 while the paper's conditional-CKA row difference
+  (`M_L(i,j) = CKA(¯Z_{L∪{i}}, ¯Z_{L∪{j}})` with strict set union,
+  `δ_L(r) = ||M_L(r,:) − M_L(r−1,:)||₂`) makes the adjacent duplicate score
+  0.0 and drop out of the candidate pool. The harness now implements the
+  paper's rows at all pool sizes (feasible: N² CKA lookups per parent per
+  depth; a parent member's own row uses the plain parent Gram, not a
+  doubled one); **every elsi_c_top entry from the recorded runs should be
+  read as surrogate-implemented**. The ELSI (entropy-only) searches never
+  used the surrogate and reproduce bitwise.
+- **Transition peaks follow Eq. 8 exactly.** The boundary deltas now
+  concatenate the full M rows including self/adjacent entries. Measured on
+  the recorded data: top-5 peak boundaries and their order unchanged, the
+  large boundary deltas shifted ~2-9% (e.g. 44→45 by 2.3-9.3% across
+  views), deep-tail deltas by under ~2.3%.
+- **CKA matrix in fp64.** The printed 46x46 matrix is computed in float64 —
+  diagonal reads exactly 1.0; fp32 roundoff had printed the two-sided
+  ±5e-6 band (recorded diagonals 0.999996-1.000005, below-1.0 values
+  included).
+- **Fidelity caveats recorded for the future reader:** (a) pooled-grid
+  reading — with 26,834 retained tokens the capture's chunk count is 839,
+  so the new u=839 view is one rep row per 32-token chunk sum (the finest
+  fidelity the saved sums support; pooled rep rows recover chunk means up
+  to the fp32 cumsum/diff roundtrip); (b) tie handling — equal scores in
+  enumerations and beams break by the harness's stable iteration order
+  (candidate id / insertion), not a canonical tiebreak, so top-3 lists with
+  near-equal scores can permute between harness versions with no math
+  change; (c) fp32 noise — sub-1e-5 CKA and above-1.0 diagonals in any
+  fp32 artifact are roundoff, not signal, and the fp64 matrix is the
+  reference read.
 
 ## Implications for the downstream tickets
 
