@@ -519,7 +519,9 @@ def cache(
     serving-style admission within each slice (length-sorted,
     whole-conversation packs with ``local_batch_size`` as the count cap);
     ``train_data_path`` overrides the default regen corpus (budget-probe
-    sweeps run on a small head, not the full corpus).
+    sweeps run on a small head, not the full corpus); a non-default corpus
+    must carry a non-default ``cache_root``, since the default root hosts
+    the full-run slice plan and a head run would silently freeze it.
     """
     merged_manifest = Path(cache_root) / "manifest.json"
     if merged_manifest.exists():
@@ -528,6 +530,13 @@ def cache(
             "Delete the cache root to rebuild from scratch."
         )
         raise RuntimeError(msg)
+    if train_data_path and cache_root == f"{VOL}/cache":
+        root_error = (
+            "pass --cache-root for a non-default corpus: the default root "
+            "hosts the full-run slice plan, and a head-corpus run would "
+            "silently freeze it for that head"
+        )
+        raise RuntimeError(root_error)
     data_path = train_data_path or f"{VOL}/data/regen.jsonl"
     total_rows = count_jsonl_lines(data_path)
     slices = write_slice_plan(cache_root, total_rows, slice_rows)
