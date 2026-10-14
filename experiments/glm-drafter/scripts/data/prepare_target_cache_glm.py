@@ -284,9 +284,10 @@ def _build_cache_dataloader(
     """Build the capture dataloader under both batching modes.
 
     ``--cache-token-budget`` selects serving-style admission control over a
-    length-sorted stream (the sort order is canonical, so the resumable
-    build's slices are contiguous ranges of it); unset selects the upstream
-    fixed-count loader whose batch 2 default is the proven safe floor.
+    length-sorted stream, each slice deriving its own canonical packs; unset
+    selects the upstream fixed-count loader whose batch 2 default is the
+    proven safe floor (cache path byte-identical to pre-#77; stdout gains
+    one summary line).
     """
     if cli_args.cache_token_budget is None:
         pack_prefix_counts = None
@@ -300,7 +301,9 @@ def _build_cache_dataloader(
         )
         return dataloader, pack_prefix_counts
     token_budget = int(cli_args.cache_token_budget)
+    pre_pass_start = time.perf_counter()
     lengths, filtered_rows = _compute_trunc_lengths(local_subset, train_collator)
+    pre_pass_seconds = time.perf_counter() - pre_pass_start
     packs = build_packs(
         lengths,
         token_budget=token_budget,
@@ -317,6 +320,23 @@ def _build_cache_dataloader(
     for pack in packs:
         running_rows += len(pack)
         pack_prefix_counts.append(running_rows)
+    # the OOM-boundary probe measured PADDED tokens (issue #57): 8,192 passed,
+    # 16,384 OOMed on the B200:4 pool; admission now bounds each pack's padded
+    # peak by the budget, so a budget above the probed tier re-runs the probe first.
+    padded_tokens = int(padded_token_count(lengths, packs))
+    if token_budget > 8_192:
+        budget_warning = (
+            f"token_budget {token_budget} exceeds the probed pass tier "
+            "(8,192 padded tokens on B200:4; 16,384 OOM'd) — re-probe before "
+            "a build at this budget (issue #57 resolution)"
+        )
+        print(budget_warning, flush=True)
+    if packs:
+        largest_pack_rows = max(len(pack) for pack in packs)
+        largest_pack_tokens = max(sum(int(lengths[index]) for index in pack) for pack in packs)
+    else:
+        largest_pack_rows = 0
+        largest_pack_tokens = 0
     print(
         json.dumps(
             {
@@ -327,12 +347,11 @@ def _build_cache_dataloader(
                 "total_rows": local_total_samples,
                 "filtered_rows": filtered_rows,
                 "packs": len(packs),
-                "real_tokens": int(sum(lengths)),
-                "padded_tokens": int(padded_token_count(lengths, packs)),
-                "largest_pack_rows": max(len(pack) for pack in packs),
-                "largest_pack_tokens": max(
-                    sum(int(lengths[index]) for index in pack) for pack in packs
-                ),
+                "planned_tokens": int(sum(lengths)),
+                "padded_tokens": padded_tokens,
+                "largest_pack_rows": largest_pack_rows,
+                "largest_pack_tokens": largest_pack_tokens,
+                "pre_pass_seconds": round(pre_pass_seconds, 1),
             },
             indent=4,
         ),
@@ -346,6 +365,51 @@ def _build_cache_dataloader(
         pin_memory=True,
     )
     return dataloader, pack_prefix_counts
+
+
+def _write_batch_samples(writer, batch, seq_lens, target_result):
+    """Slice each sample at its mask length and hand it to the shard writer."""
+    for sample_idx_in_batch, seq_len in enumerate(seq_lens):
+        seq_len = int(seq_len)
+        writer.write_sample(
+            input_ids=batch["input_ids"][sample_idx_in_batch, :seq_len],
+            attention_mask=batch["attention_mask"][sample_idx_in_batch, :seq_len],
+            loss_mask=batch["loss_mask"][sample_idx_in_batch, :seq_len],
+            target_hidden_states=target_result.target_hidden_states[sample_idx_in_batch, :seq_len],
+            target_last_hidden_states=target_result.target_last_hidden_states[
+                sample_idx_in_batch, :seq_len
+            ],
+        )
+
+
+def _print_capture_summary(
+    *,
+    pack_prefix_counts,
+    cli_args,
+    capture_rows,
+    capture_real_tokens,
+    capture_padded_tokens,
+    capture_seconds,
+):
+    """Measured outcome printed after the loop; tokens from collated masks."""
+    print(
+        json.dumps(
+            {
+                "batcher": "token-budget" if pack_prefix_counts is not None else "fixed-count",
+                "local_batch_size": int(cli_args.local_batch_size),
+                "cache_token_budget": cli_args.cache_token_budget,
+                "rows": capture_rows,
+                "real_tokens": capture_real_tokens,
+                "padded_tokens": capture_padded_tokens,
+                "pad_waste": capture_padded_tokens - capture_real_tokens,
+                "seconds": round(capture_seconds, 1),
+                "tok_per_s": round(capture_real_tokens / max(capture_seconds, 1e-9)),
+                "padded_tok_per_s": round(capture_padded_tokens / max(capture_seconds, 1e-9)),
+            },
+            indent=4,
+        ),
+        flush=True,
+    )
 
 
 def main():
@@ -419,6 +483,7 @@ def main():
     last_progress_printed = 0
     capture_rows = 0
     capture_real_tokens = 0
+    capture_padded_tokens = 0
     capture_start = time.perf_counter()
     try:
         with torch.no_grad():
@@ -452,21 +517,12 @@ def main():
                     target_layer_ids=target_layer_ids,
                 )
                 seq_lens = batch["attention_mask"].sum(dim=1).tolist()
-                capture_rows += len(seq_lens)
-                capture_real_tokens += int(batch["attention_mask"].sum())
-                for sample_idx_in_batch, seq_len in enumerate(seq_lens):
-                    seq_len = int(seq_len)
-                    writer.write_sample(
-                        input_ids=batch["input_ids"][sample_idx_in_batch, :seq_len],
-                        attention_mask=batch["attention_mask"][sample_idx_in_batch, :seq_len],
-                        loss_mask=batch["loss_mask"][sample_idx_in_batch, :seq_len],
-                        target_hidden_states=target_result.target_hidden_states[
-                            sample_idx_in_batch, :seq_len
-                        ],
-                        target_last_hidden_states=target_result.target_last_hidden_states[
-                            sample_idx_in_batch, :seq_len
-                        ],
-                    )
+                capture_rows, capture_real_tokens, capture_padded_tokens = (
+                    capture_rows + len(seq_lens),
+                    capture_real_tokens + sum(int(seq_len) for seq_len in seq_lens),
+                    capture_padded_tokens + int(batch["attention_mask"].numel()),
+                )
+                _write_batch_samples(writer, batch, seq_lens, target_result)
                 if should_print_progress:
                     _print_prepare_progress(
                         processed_samples=processed_local_samples,
@@ -476,20 +532,13 @@ def main():
     finally:
         writer.close()
     capture_seconds = time.perf_counter() - capture_start
-    print(
-        json.dumps(
-            {
-                "batcher": "token-budget" if pack_prefix_counts is not None else "fixed-count",
-                "local_batch_size": int(cli_args.local_batch_size),
-                "cache_token_budget": cli_args.cache_token_budget,
-                "rows": capture_rows,
-                "real_tokens": capture_real_tokens,
-                "seconds": round(capture_seconds, 1),
-                "tok_per_s": round(capture_real_tokens / max(capture_seconds, 1e-9)),
-            },
-            indent=4,
-        ),
-        flush=True,
+    _print_capture_summary(
+        pack_prefix_counts=pack_prefix_counts,
+        cli_args=cli_args,
+        capture_rows=capture_rows,
+        capture_real_tokens=capture_real_tokens,
+        capture_padded_tokens=capture_padded_tokens,
+        capture_seconds=capture_seconds,
     )
     del target_model
     torch.cuda.empty_cache()
